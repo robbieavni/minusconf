@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 minusconf is a service location protocol.
-Unlike SSDP/UPnP/ZeroConf/SLP and friends, it works without any configuration anywhere, is lightweight (this file is the whole implementation), allows multiple hosts per service without any configuration between the services and survives turning off arbitrary hosts as well as subnets.
+Unlike SSDP/UPnP/ZeroConf/SLP and friends, it works without any configuration anywhere, is lightweight (this file is the whole implementation), allows multiple services per machine without any configuration between the services and survives turning off arbitrary machines as well as subnets.
 However, it lacks device descriptions, abonnements and unsolicited advertisements.
 
 
