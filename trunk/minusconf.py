@@ -1,32 +1,7 @@
 #!/usr/bin/env python
 """
-minusconf is a service location protocol.
-Unlike SSDP/UPnP/ZeroConf/SLP and friends, it works without any configuration anywhere, is lightweight (this file is the whole implementation), allows multiple services per machine without any configuration between the services and survives turning off arbitrary machines as well as subnets.
-However, it lacks device descriptions, abonnements and unsolicited advertisements.
-
-
-minusconf advertisers listen on UDP port 6376 on the multicast groups 239.45.99.98 and/or ff08::6d69:6e75:7363:6f6e:6600.
-
-Every minusconf packet starts with 0xadc3e6e7.
-The next byte is the opcode, between 0 and 99 for seekers and 100 and 199 for advertisers.
-The format of the rest of the message depends on the opcode. Any data after the here defined must be ignored.
-For the rest of this text, let a string(S) consist of any number of Unicode characters encoded in UTF-8 ending with '\0'.
-
-1 Query(S advertisername, S servicetype, S servicename)
-
-Asks for service locations. An empty string matches any value.
-servicetype can be any name in http://www.iana.org/assignments/port-numbers or another name server and client agree to use.
-
-101 Advertisement (S advertisername, S servicetype, S servicename, S location, S port)
-
-A response to a query. advertisername, servicetype and servicename are usually copied from the query. If the client asked for ""(any value), advertisers should fill in a preferred value. (Because an empty servicetype makes no sense, advertisers must fill in a value in this case). If location is not empty, it is a string representation of an address that must be used to initiate a connection. The port argument is inteded for a UDP or TCP port, but can also be used to transfer any other application-specific data. Servers may send multiple advertisement packages, hence clients must ignore repeated identical advertisements.
-
-111 Error (S message)
-
-(Optional) reply to an invalid or unanswerable query. Must not be sent in response to a message with opcode != 1 and should not be sent if magic is not present.
-
-
-This implementation is licensensed under the Apache License 2.0.
+Implementation of the minusconf protocol. See http://code.google.com/p/minusconf/ for details.
+Apache License 2.0, see the LICENSE file for details.
 """
 
 import struct
