@@ -13,7 +13,6 @@ _PORT = 6376
 _ADDRESS_4 = '239.45.99.98'
 _ADDRESS_6 = 'ff08:0:0:6d69:6e75:7363:6f6e:6600'
 _ADDRESSES = [_ADDRESS_4, _ADDRESS_6]
-_ADDRESSES = [_ADDRESS_6]
 _CHARSET = 'UTF-8'
 
 try:
@@ -128,13 +127,13 @@ class Advertiser(threading.Thread):
 		self.setDaemon(daemonized)
 	
 	def run(self):
-		family,addrs = _get_addresses(self.addresses)
+		common_family,addrfams = _addressfamilies(self.addresses)
 		
-		sock = socket.socket(family, socket.SOCK_DGRAM)
+		sock = socket.socket(common_family, socket.SOCK_DGRAM)
 		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		sock.bind(('', self.port))
-		for a in addrs:
-			_multicast_join_group(sock, family, a)
+		for fam,addr in addrfams:
+			_multicast_join_group(sock, fam, addr)
 		
 		self.__run_on_sock(sock)
 	
@@ -192,12 +191,11 @@ class Seeker(threading.Thread):
 		self.results = set()
 	
 	def run(self):
+		common_family,addrfams = _addressfamilies(self.addresses)
 		
-		family,addrs = _get_addresses(self.addresses)
+		sock = _multicast_sender(common_family)
 		
-		sock = _multicast_sender(family)
-		
-		for addr in addrs:
+		for fam,addr in addrfams:
 			self.__send_query(sock, (addr, self.port))
 		
 		self.__read_replies(sock)
@@ -297,38 +295,30 @@ def _multicast_sender(family, ttl=None):
 
 def _multicast_join_group(sock, family, addr):
 	group_bin = _inet_pton(family, addr)
-	if sock.family == socket.AF_INET: # IPv4
+	if family == socket.AF_INET: # IPv4
 		mreq = group_bin + struct.pack('=I', socket.INADDR_ANY)
 		sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-	else: # IPv6
+	elif family == socket.AF_INET6: # IPv6
 		mreq = group_bin + struct.pack('@I', 0)
 		sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+	else:
+		raise ValueError('Unsupported protocol family ' + family)
 
-def _address426(v4addr):
-	""" RFC 1933 implementation """
-	return '::' + v4addr
-
-def _get_addresses(straddrs, ignoreUnavailable=True):
-	""" Returns a tupel (address family, addresses in 1.2.3.4 or 1::2 form).
+def _addressfamilies(straddrs, ignoreUnavailable=True):
+	""" Returns a tupel (common address family, (family, address)*).
+	Common address family is IPv4 iff only IPv4 addresses have been supplied.
 	If ignoreUnavailable is set, addresses for unavailable protocols are ignored. """
 	
-	rawvals = [] # tupel of tupels (family, addr)
+	addrs = [] # Addresses
 	for sa in straddrs:
 		try:
 			ai = socket.getaddrinfo(sa, None)[0]
-			rawvals.append((ai[0], ai[4][0]))
+			addrs.append((ai[0], ai[4][0]))
 		except:
 			if not ignoreUnavailable:
 				raise
 	
-	family = socket.AF_INET6 if (socket.has_ipv6 and any((lambda rv: rv[0] == socket.AF_INET6 for rv in rawvals))) else socket.AF_INET
-	
-	addrs = []
-	for rvfam,rvaddr in rawvals:
-		if family != rvfam:
-			addrs.append(_address426(rvaddr))
-		else:
-			addrs.append(rvaddr)
+	family = socket.AF_INET6 if (socket.has_ipv6 and any((lambda addr: addr[0] == socket.AF_INET6 for addr in addrs))) else socket.AF_INET
 	
 	return (family,addrs)
 
