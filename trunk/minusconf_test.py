@@ -35,12 +35,18 @@ class MinusconfUnitTest(unittest.TestCase):
 		assert_sm('', '', [self.svc1, self.svc2, self.svc3])
 	
 	def testServiceRepresentation(self):
+		svca = minusconf.ServiceAt('aaa', 'bbb', 'ccc', 'ddd', 'eee', 'fff')
+		
 		for reprfunc in (repr,str):
-			for svc in [self.svc1, self.svc2, self.svc3, self.svc4, minusconf.ServiceAt('a', 'b', 'c', 'd', 'e', 'f')]:
+			for svc in [self.svc1, self.svc2, self.svc3, self.svc4, svca]:
 				r = reprfunc(svc)
 				self.assertTrue(r.find(svc.stype) >= 0)
 				self.assertTrue(r.find(svc.port) >= 0)
 				self.assertTrue(r.find(svc.sname) >= 0)
+			
+			r = reprfunc(svca)
+			self.assertTrue(r.find(svca.aname) >= 0)
+			self.assertTrue(r.find(svca.location) >= 0)
 	
 	def testRealExample(self):
 		a1 = minusconf.Advertiser([self.svc1])
@@ -59,7 +65,10 @@ class MinusconfUnitTest(unittest.TestCase):
 		s = minusconf.Seeker(self.svc2.stype, timeout=0.5)
 		svc_eq = lambda svc, exp: (svc.sname == exp.sname and svc.stype == exp.stype and svc.port == exp.port)
 		svc_in = lambda svc, svcs: any((svc_eq(svc, s) for s in svcs))
-		s.find_callback = lambda seeker,svcat: self.assertTrue(svc_in(svcat, [self.svc2, self.svc3, self.svc4]))
+		def find_callback(seeker,svcat):
+			self.assertTrue(svc_in(svcat, [self.svc2, self.svc3, self.svc4]))
+			self.assertTrue(svcat.aname != "")
+		s.find_callback = find_callback
 		s.error_callback = lambda seeker,errorstr: self.fail('Got error ' + repr(errorstr) + ' from ' + repr(seeker))
 		
 		s.run()
