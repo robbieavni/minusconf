@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+"""Apache License 2.0, see the LICENSE file for details."""
 
 import unittest
 import minusconf
