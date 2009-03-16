@@ -336,13 +336,13 @@ def _main():
 			_usage()
 		
 		stype,port = options[:2]
-		advertisername = options[2] if len(options) > 2 else ''
+		advertisername = options[2] if len(options) > 2 else None
 		sname = options[3] if len(options) > 3 else ''
 		slocation = options[4] if len(options) > 4 else ''
 		
 		service = Service(stype, port, sname, slocation)
 		advertiser = Advertiser([service], advertisername)
-		advertiser.run_forever()
+		advertiser.run()
 	elif sc == 's' or sc == 'seek':
 		if len(options) > 4:
 			_usage()
@@ -352,7 +352,7 @@ def _main():
 		sname = options[2] if len(options) > 2 else ''
 		
 		se = Seeker(aname, stype, sname, find_callback=_print_result, error_callback=_print_error)
-		se.seek_blocking()
+		se.run()
 	else:
 		_usage('Unknown subcommand "' + sys.argv[0] + '"')
 
