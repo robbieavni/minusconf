@@ -12,16 +12,23 @@ import time
 _PORT = 6376
 _ADDRESS_4 = '239.45.99.98'
 _ADDRESS_6 = 'ff08:0:0:6d69:6e75:7363:6f6e:6600'
-_ADDRESSES = [_ADDRESS_4]
-if socket.has_ipv6:
-	_ADDRESSES.append(_ADDRESS_6)
+_ADDRESSES = [_ADDRESS_4, _ADDRESS_6]
+_ADDRESSES = [_ADDRESS_6]
 _CHARSET = 'UTF-8'
 
-_MAGIC = struct.pack('!I', 0xadc3e6e7) # b'\xad\xc3\xe6\xe7' , but works in python<2.6 *and* >=3
-_OPCODE_QUERY = struct.pack('!B', 0x01) # b'\x01'
-_OPCODE_ADVERTISEMENT = struct.pack('!B', 0x65) # b'\x65'
-_OPCODE_ERROR = struct.pack('!B', 0x6f) # b'\x6f'
-_STRING_TERMINATOR = struct.pack('!B', 0x00) # b'\0'
+try:
+	if bytes != str: # Python 3+
+		_compat_bytes = lambda bytestr: bytes(bytestr, 'charmap')
+	else: # 2.6+
+		_compat_bytes = str
+except: # <2.6
+	_compat_bytes = str
+
+_MAGIC = _compat_bytes('\xad\xc3\xe6\xe7')
+_OPCODE_QUERY = _compat_bytes('\x01')
+_OPCODE_ADVERTISEMENT = _compat_bytes('\x65')
+_OPCODE_ERROR = _compat_bytes('\x6f')
+_STRING_TERMINATOR = _compat_bytes('\x00')
 
 # Biggest packet size this implementation will accept"""
 _MAX_PACKET_SIZE = 2048
@@ -55,86 +62,79 @@ class _ImmutableStruct(object):
 class Service(_ImmutableStruct):
 	""" Helper structure for a service."""
 	
-	def __init__(self, stype, port, name="", location="", addAttrs={}):
-		addAttrs.update({"stype": stype, "port":port, "name": name, "location":location})
-		super(Service, self).__init__(addAttrs)
+	def __init__(self, stype, port, sname='', location=''):
+		super(Service, self).__init__({'stype': stype, 'port':port, 'sname': sname, 'location':location})
 	
-	def matches_query(self, stype, name):
-		return _string_match(stype, self.stype) and _string_match(name, self.name)
+	def matches_query(self, stype, sname):
+		return _string_match(stype, self.stype) and _string_match(sname, self.sname)
 	
-	def __repr__(self):
-		res = self.stype + " service at "
-		if self.name != "": res += self.name + " "
-		res += self.location + ":" + self.port
+	def __str__(self):
+		res = self.stype + ' service at '
+		if self.sname != '': res += self.sname + ' '
+		res += self.location + ':' + self.port
 		
 		return res
+	
+	def __repr__(self):
+		return ('Service(' +
+			repr(self.stype) + ', ' +
+			repr(self.port) + ', ' +
+			repr(self.sname) + ', ' +
+			repr(self.location) + ')')
 
-class ServiceAt(Service):
-	def __init__(self, aname, stype, sname, location, port, addr, addAttrs={}):
-		addAttrs.update({"aname": aname, "addr":addr})
-		super(ServiceAt, self).__init__(stype, port, sname, location, addAttrs)
+class ServiceAt(_ImmutableStruct):
+	""" A service returned by an advertiser"""
+	
+	def __init__(self, aname, stype, sname, location, port, addr):
+		super(ServiceAt, self).__init__(
+			{'aname': aname, 'stype': stype, 'sname': sname, 'location': location, 'port': port, 'addr':addr}
+		)
 	
 	def matches_query_at(self, aname, stype, sname):
-		return self.matches_query(stype, sname) and _string_match(aname, self.aname)
+		return _string_match(stype, self.stype) and _string_match(sname, self.sname) and _string_match(aname, self.aname)
 	
 	@property
 	def effective_location(self):
 		return self.location if self.location != "" else self.addr
 	
+	def __str__(self):
+		return (
+			self.stype + ' service at ' +
+			((self.sname + ' ') if self.sname != '' else '') +
+			self.location + ':' + self.port +
+			' (advertiser "' + self.aname + '" at ' + self.addr + ')'
+			)
+	
 	def __repr__(self):
-		return super(ServiceAt, self).__repr__() + " (advertiser \"" + self.aname + "\" at " + self.addr + ")"
+		return ('ServiceAt(' +
+			repr(self.aname) + ', ' +
+			repr(self.stype) + ', ' +
+			repr(self.sname) + ', ' +
+			repr(self.location) + ', ' +
+			repr(self.port) + ', ' +
+			repr(self.addr) + ')')
 
-class Advertiser(object):
+
+class Advertiser(threading.Thread):
 	""" Implementation of a -conf advertiser."""
 	
-	def __init__(self, services=[], aname=None, port=_PORT, addresses=_ADDRESSES):
-		self.__services = services
-		self.__slock = threading.RLock()
-		self.aname = aname if aname != "" else socket.gethostname()
+	def __init__(self, services=[], aname=None, port=_PORT, addresses=_ADDRESSES, daemonized=True):
+		super(Advertiser, self).__init__()
+		
+		self.services = services
+		self.aname = aname if aname != None else socket.gethostname()
 		self.port = port
 		self.addresses = addresses
+		self.setDaemon(daemonized)
 	
-	def add_service(self, svc):
-		self.__slock.acquire()
-		self.__services.append(svc)
-		self.__slock.release()
-	
-	def remove_service(self, svc):
-		self.__slock.acquire()
-		try:
-			self.__services.remove(svc)
-		except ValueError:
-			pass
-		finally:
-			self.__slock.release()
-	
-	def run_forever(self):
-		""" Runs the advertiser until error """
-		threads = self.run_background()
+	def run(self):
+		family,addrs = _get_addresses(self.addresses)
 		
-		for t in threads:
-			t.join()
-	
-	def run_background(self, daemonized=True):
-		""" Runs the advertiser in a number of spawned threads which are returned. """
-		aiss = _getaddrinfos(self.addresses)
-		
-		res = []
-		for ais in aiss:
-			if len(ais) == 0:
-				continue
-			
-			t = threading.Thread(target=self.__run_on_addressinfos, args=(ais,))
-			t.setDaemon(daemonized)
-			
-			res.append(t)
-			t.start()
-		
-		return res
-	
-	def __run_on_addressinfos(self, ais):
-		""" Runs the advertiser and listens to all addressinfos in ais """
-		sock = _multicast_mult_receiver(ais[0][0], ais, self.port, True)
+		sock = socket.socket(family, socket.SOCK_DGRAM)
+		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		sock.bind(('', self.port))
+		for a in addrs:
+			_multicast_join_group(sock, family, a)
 		
 		self.__run_on_sock(sock)
 	
@@ -146,18 +146,13 @@ class Advertiser(object):
 			if opcode == _OPCODE_QUERY:
 				try:
 					self.__handle_query(sock, sender, data)
-				except MinusconfError, mce:
+				except MinusconfError as mce:
 					mce.send(sock, sender)
-				# To be really verbose, uncomment the following two lines
-				#except BaseException, be:
-				#	MinusconfError(str(be)).send(sock, sender)
+				except BaseException as be:
+					MinusconfError(str(be)).send(sock, sender)
 	
 	def services_matching(self, stype, sname):
-		self.__slock.acquire()
-		res = filter(lambda svc: svc.matches_query(stype, sname), self.__services)
-		self.__slock.release()
-		
-		return res
+		return filter(lambda svc: svc.matches_query(stype, sname), self.services)
 	
 	def __handle_query(self, sock, sender, qrydata):
 		qaname,p = _decode_string(qrydata, 0)
@@ -166,18 +161,27 @@ class Advertiser(object):
 		
 		if _string_match(qaname, self.aname):
 			for svc in self.services_matching(qstype, qsname):
-				rply = _encode_string(self.aname) + _encode_string(svc.stype) + _encode_string(svc.name) + _encode_string(svc.location) + _encode_string(svc.port)
+				rply = (
+					_encode_string(self.aname) +
+					_encode_string(svc.stype) +
+					_encode_string(svc.sname) +
+					_encode_string(svc.location) +
+					_encode_string(svc.port)
+					)
 				
 				_send_packet(sock, sender, _OPCODE_ADVERTISEMENT, rply)
 
-class Seeker(object):
+class Seeker(threading.Thread):
 	""" find_callback is called with (this_seeker,found_service_at) """
-	def __init__(self, servicetype="", advertisername="", servicename="", timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None):
+	def __init__(self, servicetype="", advertisername="", servicename="", timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None, error_callback=None, daemonized=True):
+		super(Seeker, self).__init__()
+		
 		self.timeout = timeout
 		self.port = port
 		self.addresses = addresses
 		self.find_callback = find_callback
-		self.__flock = threading.RLock()
+		self.error_callback = error_callback
+		self.setDaemon(daemonized)
 		self.reset(servicetype, advertisername, servicename)
 	
 	def reset(self, servicetype="", advertisername="", servicename=""):
@@ -187,38 +191,21 @@ class Seeker(object):
 		
 		self.results = set()
 	
-	def seek_blocking(self):
-		threads = self.seek_background()
+	def run(self):
 		
-		for t in threads:
-			t.join()
+		family,addrs = _get_addresses(self.addresses)
+		
+		sock = _multicast_sender(family)
+		
+		for addr in addrs:
+			self.__send_query(sock, (addr, self.port))
+		
+		self.__read_replies(sock)
 	
-	""" Returns the spawned threads."""
-	def seek_background(self, daemonized=True):
-		self.__starttime = time.time()
-		
-		aiss = _getaddrinfos(self.addresses)
-		
-		res = []
-		for ais in aiss:
-			if len(ais) == 0:
-				continue
-			
-			t = threading.Thread(target=self.__seek_on_addressinfos, args=(ais,))
-			t.setDaemon(daemonized)
-			
-			res.append(t)
-			t.start()
-		
-		return res
-	
-	def __seek_on_addressinfos(self, ais):
-		sock = _multicast_sender(ais[0][0])
-		for ai in ais:
-			self.__send_query(sock, (ai[4][0], self.port))
-		
+	def __read_replies(self, sock):
+		starttime = time.time()
 		while True:
-			timeout = self.timeout - (time.time() - self.__starttime)
+			timeout = self.timeout - (time.time() - starttime)
 			if timeout < 0:
 				break
 			
@@ -228,6 +215,14 @@ class Seeker(object):
 				
 				if opcode == _OPCODE_ADVERTISEMENT:
 					self.__handle_advertisement(data, sender)
+				elif opcode == _OPCODE_ERROR:
+					try:
+						error_str = _decode_string(data, 0)[0]
+					except:
+						error_str = '[Error when trying to read error message ' + repr(data) + ']'
+					
+					if self.error_callback != None:
+							self.error_callback(sender, error_str)
 			except socket.timeout:
 				break
 	
@@ -250,14 +245,10 @@ class Seeker(object):
 			self.__found_result(svca)
 	
 	def __found_result(self, result):
-		self.__flock.acquire()
-		try:
-			if not (result in self.results):
-				self.results.add(result)
-				if self.find_callback != None:
-					self.find_callback(self, result)
-		finally:
-			self.__flock.release()
+		if not (result in self.results):
+			self.results.add(result)
+			if self.find_callback != None:
+				self.find_callback(self, result)
 
 def _send_packet(sock, to, opcode, data):
 	sock.sendto(_MAGIC + opcode + data, 0, to)
@@ -271,7 +262,7 @@ def _parse_packet(sock):
 		# Wrong protocol
 		return (None, None, None)
 	
-	opcode = data[len(_MAGIC)]
+	opcode = data[len(_MAGIC):len(_MAGIC)+1]
 	payload = data[len(_MAGIC)+1:]
 	
 	return (opcode, payload, sender)
@@ -284,12 +275,10 @@ def _decode_string(buf, pos):
 	Returns a tupel of the read string and the next byte to read.
 	"""
 	for i in range(pos, len(buf)):
-		if buf[i] == '\0':
-			break
-	else:
-		raise MinusconfError("Premature end of string (Forgot trailing \\0?)")
+		if buf[i:i+1] == _compat_bytes('\x00'):
+			return (buf[pos:i].decode(_CHARSET), i+1)
 	
-	return (buf[pos:i].decode(_CHARSET), i+1)
+	raise MinusconfError("Premature end of string (Forgot trailing \\0?), buf=" + repr(buf))
 
 def _string_match(query, value):
 	return query == "" or query == value
@@ -306,25 +295,8 @@ def _multicast_sender(family, ttl=None):
 	
 	return s
 
-def _multicast_receiver(addr, port, reuse=True):
-	addrinfo = socket.getaddrinfo(addr, None)[0]
-	multicast_mult_receiver(addrinfo[0], [addrinfo], port, reuse)
-
-def _multicast_mult_receiver(family, addrinfos, port, reuse=True):
-	s = socket.socket(family, socket.SOCK_DGRAM)
-	
-	if reuse:
-		s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-	
-	s.bind(('', port))
-	
-	for ai in addrinfos:
-		_multicast_join_group(s, ai)
-	
-	return s
-
-def _multicast_join_group(sock, addrinfo):
-	group_bin = socket.inet_pton(addrinfo[0], addrinfo[4][0])
+def _multicast_join_group(sock, family, addr):
+	group_bin = _inet_pton(family, addr)
 	if sock.family == socket.AF_INET: # IPv4
 		mreq = group_bin + struct.pack('=I', socket.INADDR_ANY)
 		sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
@@ -332,31 +304,40 @@ def _multicast_join_group(sock, addrinfo):
 		mreq = group_bin + struct.pack('@I', 0)
 		sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
 
-""" Returns a tupel of IPv4 and IPv6 getaddrinfo results """
-def _getaddrinfos(addrstrs, silentIgnore=True):
-	v4s = []
-	v6s = []
+def _address426(v4addr):
+	""" RFC 1933 implementation """
+	return '::' + v4addr
+
+def _get_addresses(straddrs, ignoreUnavailable=True):
+	""" Returns a tupel (address family, addresses in 1.2.3.4 or 1::2 form).
+	If ignoreUnavailable is set, addresses for unavailable protocols are ignored. """
 	
-	for addrstr in addrstrs:
+	rawvals = [] # tupel of tupels (family, addr)
+	for sa in straddrs:
 		try:
-			ai = socket.getaddrinfo(addrstr, None)[0]
-			
-			if ai[0] == socket.AF_INET:
-				v4s.append(ai)
-			else:
-				v6s.append(ai)
+			ai = socket.getaddrinfo(sa, None)[0]
+			rawvals.append((ai[0], ai[4][0]))
 		except:
-			if not silentIgnore:
+			if not ignoreUnavailable:
 				raise
 	
-	return (v4s, v6s)
+	family = socket.AF_INET6 if (socket.has_ipv6 and any((lambda rv: rv[0] == socket.AF_INET6 for rv in rawvals))) else socket.AF_INET
+	
+	addrs = []
+	for rvfam,rvaddr in rawvals:
+		if family != rvfam:
+			addrs.append(_address426(rvaddr))
+		else:
+			addrs.append(rvaddr)
+	
+	return (family,addrs)
 
 def _main():
 	""" CLI interface """
 	import sys
 	
 	if len(sys.argv) < 2:
-		_usage('Expected at least two arguments!')
+		_usage('Expected at least one parameter!')
 	
 	sc = sys.argv[1]
 	options = sys.argv[2:]
@@ -380,13 +361,17 @@ def _main():
 		stype = options[1] if len(options) > 1 else ''
 		sname = options[2] if len(options) > 2 else ''
 		
-		se = Seeker(aname, stype, sname, find_callback=_print_result)
+		se = Seeker(aname, stype, sname, find_callback=_print_result, error_callback=_print_error)
 		se.seek_blocking()
 	else:
 		_usage('Unknown subcommand "' + sys.argv[0] + '"')
 
 def _print_result(seeker, svca):
 	print ("Found " + str(svca))
+
+def _print_error(opposite, error_str):
+	import sys
+	sys.stderr.write("Error from " + str(opposite) + ": " + error_str + "\n")
 
 def _usage(note=None, and_exit=True):
 	import sys
@@ -404,6 +389,94 @@ def _usage(note=None, and_exit=True):
 	
 	if and_exit:
 		sys.exit(0)
+
+def _compat_inet_pton(family, addr):
+	""" socket.inet_pton for platforms that don't have it """
+	
+	if family == socket.AF_INET:
+		# inet_aton accepts some strange forms, so we use our own
+		res = _compat_bytes('')
+		parts = addr.split('.')
+		if len(parts) != 4:
+			raise ValueError('Expected 4 dot-separated numbers')
+		
+		for part in parts:
+			intval = int(part, 10)
+			if intval < 0 or intval > 0xff:
+				raise ValueError("Invalid integer value in IPv4 address: " + str(intval))
+			
+			res = res + struct.pack('!B', intval)
+		
+		return res
+	elif family == socket.AF_INET6:
+		wordcount = 8
+		res = _compat_bytes('')
+		
+		# IPv4 embedded?
+		dotpos = addr.find('.')
+		if dotpos >= 0:
+			v4start = addr.rfind(':', 0, dotpos)
+			if v4start == -1:
+				raise ValueException("Missing colons in an IPv6 address")
+			wordcount = 6
+			res = socket.inet_aton(addr[v4start+1:])
+			addr = addr[:v4start] + '!' # We leave a marker that the address is not finished
+		
+		# Compact version?
+		compact_pos = addr.find('::')
+		if compact_pos >= 0:
+			if compact_pos == 0:
+				addr = '0' + addr
+				compact_pos += 1
+			if compact_pos == len(addr)-len('::'):
+				addr = addr + '0'
+			
+			addr = (addr[:compact_pos] + ':' +
+				('0:' * (wordcount - (addr.count(':') - '::'.count(':')) - 2))
+				+ addr[compact_pos + len('::'):])
+		
+		# Remove any dots we left
+		if addr.endswith('!'):
+			addr = addr[:-len('!')]
+		
+		words = addr.split(':')
+		if len(words) != wordcount:
+			raise ValueError('Invalid number of IPv6 hextets, expected ' + str(wordcount) + ', got ' + str(len(words)))
+		for w in reversed(words):
+			# 0x and negative is not valid here, but accepted by int(,16)
+			if 'x' in w or '-' in w:
+				raise ValueError("Invalid character in IPv6 address")
+			
+			intval = int(w, 16)
+			if intval > 0xffff:
+				raise ValueError("IPv6 address componenent too big")
+			res = struct.pack('!H', intval) + res
+		
+		return res
+		
+	else:
+		raise ValueError("Unknown protocol family " + family)
+
+# Cover for socket_pton inavailability on some systems (non-IPv6 or Windows)
+try:
+	import ipaddr
+	
+	if hasattr(ipaddr.IPv4, 'packed'):
+		def _inet_pton(family, addr):
+			if family == socket.AF_INET:
+				return ipaddr.IPv4(addr).packed
+			elif family == socket.AF_INET6:
+				return ipaddr.IPv6(addr).packed
+			else:
+				raise ValueError("Unknown protocol family " + family)
+except:
+	pass
+
+if not '_inet_pton' in dir():
+	if hasattr(socket, 'inet_pton'):
+		_inet_pton = socket.inet_pton
+	else:
+		_inet_pton = _compat_inet_pton
 
 if __name__ == "__main__":
 	_main()
