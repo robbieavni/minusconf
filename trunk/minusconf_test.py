@@ -9,10 +9,11 @@ import time
 class MinusconfUnitTest(unittest.TestCase):
 	def setUp(self):
 		sharp_s = chr(223)
+		machineid = socket.gethostname()
 		self.svc1 = minusconf.Service('-conf-test-service', 'strangeport', 'some name')
-		self.svc2 = minusconf.Service('-conf-test-service' + sharp_s, 'strangeport', 'some name')
-		self.svc3 = minusconf.Service('-conf-test-service' + sharp_s, 'svcp3', 'svc3: sharp s = ' + sharp_s)
-		self.svc4 = minusconf.Service('-conf-test-service' + sharp_s, 'svcp4', 'svc4')
+		self.svc2 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'strangeport', 'some name')
+		self.svc3 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'svcp3', 'svc3: sharp s = ' + sharp_s)
+		self.svc4 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'svcp4', 'svc4')
 	
 	def testServiceMatching(self):
 		a = minusconf.Advertiser()
@@ -50,17 +51,14 @@ class MinusconfUnitTest(unittest.TestCase):
 	
 	def testRealExample(self):
 		a1 = minusconf.Advertiser([self.svc1])
-		a1.start()
+		a1.start_blocking()
 		a2 = minusconf.Advertiser([self.svc3])
-		a2.start()
+		a2.start_blocking()
 		self.assertEquals(self.svc2.stype, self.svc3.stype)
 		self.assertEquals(self.svc2.stype, self.svc4.stype)
 		
 		a1.services.append(self.svc2)
 		a2.services.append(self.svc4)
-		
-		# Wait for advertisers
-		time.sleep(0.5)
 		
 		s = minusconf.Seeker(self.svc2.stype, timeout=0.5)
 		svc_eq = lambda svc, exp: (svc.sname == exp.sname and svc.stype == exp.stype and svc.port == exp.port)
@@ -69,7 +67,7 @@ class MinusconfUnitTest(unittest.TestCase):
 			self.assertTrue(svc_in(svcat, [self.svc2, self.svc3, self.svc4]))
 			self.assertTrue(svcat.aname != "")
 		s.find_callback = find_callback
-		s.error_callback = lambda seeker,errorstr: self.fail('Got error ' + repr(errorstr) + ' from ' + repr(seeker))
+		s.error_callback = lambda seeker,serveraddr,errorstr: self.fail('Got error ' + repr(errorstr) + ' from ' + repr(serveraddr))
 		
 		s.run()
 		
