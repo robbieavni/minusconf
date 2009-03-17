@@ -29,8 +29,8 @@ _OPCODE_ADVERTISEMENT = _compat_bytes('\x65')
 _OPCODE_ERROR = _compat_bytes('\x6f')
 _STRING_TERMINATOR = _compat_bytes('\x00')
 
-# Biggest packet size this implementation will accept"""
-_MAX_PACKET_SIZE = 2048
+_TTL = None
+_MAX_PACKET_SIZE = 2048 # Biggest packet size this implementation will accept"""
 _SEEKER_TIMEOUT = 2.0 # Timeout for seeks in s
 
 class MinusconfError(Exception):
@@ -125,6 +125,14 @@ class Advertiser(threading.Thread):
 		self.port = port
 		self.addresses = addresses
 		self.setDaemon(daemonized)
+		self.__ready = threading.Event()
+	
+	def start_blocking(self):
+		""" Start the advertiser in a new thread, but wait until it is ready """
+		
+		self.__ready.clear()
+		self.start()
+		self.__ready.wait()
 	
 	def run(self):
 		common_family,addrfams = _addressfamilies(self.addresses)
@@ -134,6 +142,8 @@ class Advertiser(threading.Thread):
 		sock.bind(('', self.port))
 		for fam,addr in addrfams:
 			_multicast_join_group(sock, fam, addr)
+		
+		self.__ready.set()
 		
 		self.__run_on_sock(sock)
 	
@@ -171,7 +181,8 @@ class Advertiser(threading.Thread):
 				_send_packet(sock, sender, _OPCODE_ADVERTISEMENT, rply)
 
 class Seeker(threading.Thread):
-	""" find_callback is called with (this_seeker,found_service_at) """
+	""" find_callback is called with (this_seeker,found_service_at)
+	error_callback is called with (this seeker, sender, error message) """
 	def __init__(self, servicetype="", advertisername="", servicename="", timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None, error_callback=None, daemonized=True):
 		super(Seeker, self).__init__()
 		
@@ -193,7 +204,8 @@ class Seeker(threading.Thread):
 	def run(self):
 		common_family,addrfams = _addressfamilies(self.addresses)
 		
-		sock = _multicast_sender(common_family)
+		sock = socket.socket(common_family, socket.SOCK_DGRAM)
+		_multicast_configure_sender(sock, _TTL)
 		
 		for fam,addr in addrfams:
 			self.__send_query(sock, (addr, self.port))
@@ -220,7 +232,7 @@ class Seeker(threading.Thread):
 						error_str = '[Error when trying to read error message ' + repr(data) + ']'
 					
 					if self.error_callback != None:
-							self.error_callback(sender, error_str)
+							self.error_callback(self, sender, error_str)
 			except socket.timeout:
 				break
 	
@@ -281,17 +293,13 @@ def _decode_string(buf, pos):
 def _string_match(query, value):
 	return query == "" or query == value
 
-def _multicast_sender(family, ttl=None):
-	s = socket.socket(family, socket.SOCK_DGRAM)
-	
+def _multicast_configure_sender(sock, ttl=None):
 	if ttl != None:
 		ttl_bin = struct.pack('@i', ttl)
-		if family == socket.AF_INET:
-			s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
-		else:
-			s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
-	
-	return s
+		
+		sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
+		if socket.has_ipv6:
+			sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
 
 def _multicast_join_group(sock, family, addr):
 	group_bin = _inet_pton(family, addr)
@@ -359,7 +367,7 @@ def _main():
 def _print_result(seeker, svca):
 	print ("Found " + str(svca))
 
-def _print_error(opposite, error_str):
+def _print_error(seeker, opposite, error_str):
 	import sys
 	sys.stderr.write("Error from " + str(opposite) + ": " + error_str + "\n")
 
