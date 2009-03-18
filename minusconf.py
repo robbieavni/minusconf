@@ -12,7 +12,9 @@ import time
 _PORT = 6376
 _ADDRESS_4 = '239.45.99.98'
 _ADDRESS_6 = 'ff08:0:0:6d69:6e75:7363:6f6e:6600'
-_ADDRESSES = [_ADDRESS_4, _ADDRESS_6]
+_ADDRESSES = [_ADDRESS_4]
+if socket.has_ipv6:
+	_ADDRESSES.append(_ADDRESS_6)
 _CHARSET = 'UTF-8'
 
 try:
@@ -135,15 +137,16 @@ class Advertiser(threading.Thread):
 		self.__ready.wait()
 	
 	def run(self):
-		common_family,addrfams = _addressfamilies(self.addresses)
-		
-		sock = socket.socket(common_family, socket.SOCK_DGRAM)
-		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		sock.bind(('', self.port))
-		for fam,addr in addrfams:
-			_multicast_join_group(sock, fam, addr)
-		
-		self.__ready.set()
+		try:
+			common_family,addrfams = _addressfamilies(self.addresses, None, auto_convert=False)
+			
+			sock = socket.socket(common_family, socket.SOCK_DGRAM)
+			sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			sock.bind(('', self.port))
+			for fam,addr,to in addrfams:
+				_multicast_join_group(sock, fam, addr)
+		finally:
+			self.__ready.set()
 		
 		self.__run_on_sock(sock)
 	
@@ -155,10 +158,16 @@ class Advertiser(threading.Thread):
 			if opcode == _OPCODE_QUERY:
 				try:
 					self.__handle_query(sock, sender, data)
-				except MinusconfError as mce:
-					mce.send(sock, sender)
-				except BaseException as be:
-					MinusconfError(str(be)).send(sock, sender)
+				# Comment the following lines out for proper error handling (Python 2.6+)
+				#except MinusconfError as mce:
+				#	mce.send(sock, sender)
+				#except BaseException as be:
+				#	MinusconfError(str(be)).send(sock, sender)
+				
+				# Silent error handling
+				except (MinusconfError, BaseException):
+					pass
+				
 	
 	def services_matching(self, stype, sname):
 		return filter(lambda svc: svc.matches_query(stype, sname), self.services)
@@ -202,13 +211,13 @@ class Seeker(threading.Thread):
 		self.results = set()
 	
 	def run(self):
-		common_family,addrfams = _addressfamilies(self.addresses)
+		common_family,addrfams = _addressfamilies(self.addresses, self.port, auto_convert=True)
 		
 		sock = socket.socket(common_family, socket.SOCK_DGRAM)
 		_multicast_configure_sender(sock, _TTL)
 		
-		for fam,addr in addrfams:
-			self.__send_query(sock, (addr, self.port))
+		for fam,addr,to in addrfams:
+			self.__send_query(sock, to)
 		
 		self.__read_replies(sock)
 	
@@ -312,23 +321,35 @@ def _multicast_join_group(sock, family, addr):
 	else:
 		raise ValueError('Unsupported protocol family ' + family)
 
-def _addressfamilies(straddrs, ignoreUnavailable=True):
-	""" Returns a tupel (common address family, (family, address)*).
+def _addressfamilies(straddrs, port, ignore_unavailable=False, auto_convert=True):
+	""" Returns a tupel (common address family, ((family, addr, to), ...)).
 	Common address family is IPv4 iff only IPv4 addresses have been supplied.
-	If ignoreUnavailable is set, addresses for unavailable protocols are ignored. """
+	Note that to may be of a different address family, but addr is guaranteed to be of the same family.
+	If ignore_unavailable is set, addresses for unavailable protocols are ignored.
+	If auto_convert is set, IPv6 is always used"""
 	
 	addrs = [] # Addresses
+	common_family = socket.AF_INET
 	for sa in straddrs:
 		try:
-			ai = socket.getaddrinfo(sa, None)[0]
-			addrs.append((ai[0], ai[4][0]))
+			ai = socket.getaddrinfo(sa, port)[0]
+			family = ai[0]
+			to = ai[4]
+			addr = ai[4][0]
+			
+			if auto_convert and socket.has_ipv6 and family == socket.AF_INET:
+				to = socket.getaddrinfo('::ffff:' + addr, port)[0][4]
+				common_family = socket.AF_INET6
+			
+			addrs.append((family, addr, to))
+			
+			if family == socket.AF_INET6:
+				common_family = socket.AF_INET6
 		except:
 			if not ignoreUnavailable:
 				raise
 	
-	family = socket.AF_INET6 if (socket.has_ipv6 and any((lambda addr: addr[0] == socket.AF_INET6 for addr in addrs))) else socket.AF_INET
-	
-	return (family,addrs)
+	return (common_family,addrs)
 
 def _main():
 	""" CLI interface """
