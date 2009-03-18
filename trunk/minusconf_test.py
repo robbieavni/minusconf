@@ -8,7 +8,11 @@ import time
 
 class MinusconfUnitTest(unittest.TestCase):
 	def setUp(self):
-		sharp_s = chr(223)
+		try:
+			sharp_s = unichr(223)
+		except: # Python 3+
+			sharp_s = chr(223)
+		
 		machineid = socket.gethostname()
 		self.svc1 = minusconf.Service('-conf-test-service', 'strangeport', 'some name')
 		self.svc2 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'strangeport', 'some name')
@@ -38,16 +42,25 @@ class MinusconfUnitTest(unittest.TestCase):
 	def testServiceRepresentation(self):
 		svca = minusconf.ServiceAt('aaa', 'bbb', 'ccc', 'ddd', 'eee', 'fff')
 		
-		for reprfunc in (repr,str):
+		reprfuncs = [repr]
+		try:
+			if not callable(unicode):
+				raise Exception
+			
+			reprfuncs.append(unicode)
+		except:
+			reprfuncs.append(str) # Python 3+: str does not step over Unicode chars anymore
+		
+		for reprfunc in reprfuncs:
 			for svc in [self.svc1, self.svc2, self.svc3, self.svc4, svca]:
 				r = reprfunc(svc)
-				self.assertTrue(r.find(svc.stype) >= 0)
-				self.assertTrue(r.find(svc.port) >= 0)
-				self.assertTrue(r.find(svc.sname) >= 0)
+				self.assertTrue(r.find(reprfunc(svc.stype)) >= 0)
+				self.assertTrue(r.find(reprfunc(svc.port)) >= 0)
+				self.assertTrue(r.find(reprfunc(svc.sname)) >= 0)
 			
 			r = reprfunc(svca)
-			self.assertTrue(r.find(svca.aname) >= 0)
-			self.assertTrue(r.find(svca.location) >= 0)
+			self.assertTrue(r.find(reprfunc(svca.aname)) >= 0)
+			self.assertTrue(r.find(reprfunc(svca.location)) >= 0)
 	
 	def testRealExample(self):
 		a1 = minusconf.Advertiser([self.svc1])
