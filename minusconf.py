@@ -54,8 +54,23 @@ class _ImmutableStruct(object):
 		for (k,v) in values.items():
 			super(_ImmutableStruct, self).__setattr__(k, v)
 	
-	def __cmp__(self, other):
-		return cmp(self.__dict__, other.__dict__)
+	def __eq__(self, other):
+		return self.__dict__ == other.__dict__
+	
+	def __ne__(self, other):
+		return self.__dict__ != other.__dict__
+	
+	def __lt__(self, other):
+		return self.__dict__ < other.__dict__
+	
+	def __le__(self, other):
+		return self.__dict__ <= other.__dict__
+	
+	def __gt__(self, other):
+		return self.__dict__ > other.__dict__
+	
+	def __ge__(self, other):
+		return self.__dict__ >= other.__dict__
 	
 	def __hash__(self):
 		return hash(sum((hash(i) for i in self.__dict__.items())))
