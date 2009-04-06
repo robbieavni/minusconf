@@ -336,7 +336,7 @@ def _multicast_join_group(sock, family, addr):
 	else:
 		raise ValueError('Unsupported protocol family ' + family)
 
-def _addressfamilies(straddrs, port, ignore_unavailable=False, auto_convert=True):
+def _addressfamilies(straddrs, port, ignore_unavailable=True, auto_convert=True):
 	""" Returns a tupel (common address family, ((family, addr, to), ...)).
 	Common address family is IPv4 iff only IPv4 addresses have been supplied.
 	Note that to may be of a different address family, but addr is guaranteed to be of the same family.
@@ -360,8 +360,8 @@ def _addressfamilies(straddrs, port, ignore_unavailable=False, auto_convert=True
 			
 			if family == socket.AF_INET6:
 				common_family = socket.AF_INET6
-		except:
-			if not ignoreUnavailable:
+		except socket.gaierror:
+			if not ignore_unavailable:
 				raise
 	
 	return (common_family,addrs)
