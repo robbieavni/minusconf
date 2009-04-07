@@ -132,9 +132,11 @@ class ServiceAt(_ImmutableStruct):
 
 
 class Advertiser(threading.Thread):
-	""" Implementation of a -conf advertiser."""
+	""" Implementation of a -conf advertiser.
+	If ignore_unavailable is set, unsupported addresses (typically IPv6) are silently ignored
+	"""
 	
-	def __init__(self, services=[], aname=None, port=_PORT, addresses=_ADDRESSES, daemonized=True):
+	def __init__(self, services=[], aname=None, port=_PORT, addresses=_ADDRESSES, daemonized=True, ignore_unavailable=True):
 		super(Advertiser, self).__init__()
 		
 		self.services = services
@@ -153,7 +155,7 @@ class Advertiser(threading.Thread):
 	
 	def run(self):
 		try:
-			common_family,addrfams = _addressfamilies(self.addresses, None, auto_convert=False)
+			common_family,addrfams = _addressfamilies(self.addresses, None, force_v6=False)
 			
 			sock = socket.socket(common_family, socket.SOCK_DGRAM)
 			sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -226,7 +228,7 @@ class Seeker(threading.Thread):
 		self.results = set()
 	
 	def run(self):
-		common_family,addrfams = _addressfamilies(self.addresses, self.port, auto_convert=True)
+		common_family,addrfams = _addressfamilies(self.addresses, self.port, force_v6=True)
 		
 		sock = socket.socket(common_family, socket.SOCK_DGRAM)
 		_multicast_configure_sender(sock, _TTL)
@@ -336,25 +338,30 @@ def _multicast_join_group(sock, family, addr):
 	else:
 		raise ValueError('Unsupported protocol family ' + family)
 
-def _addressfamilies(straddrs, port, ignore_unavailable=True, auto_convert=True):
+def _addressfamilies(straddrs, port, ignore_unavailable=True, force_v6=True):
 	""" Returns a tupel (common address family, ((family, addr, to), ...)).
 	Common address family is IPv4 iff only IPv4 addresses have been supplied.
 	Note that to may be of a different address family, but addr is guaranteed to be of the same family.
 	If ignore_unavailable is set, addresses for unavailable protocols are ignored.
-	If auto_convert is set, IPv6 is always used"""
+	If force_v6 is set, IPv4 addresses are """
 	
 	addrs = [] # Addresses
-	common_family = socket.AF_INET
+	common_family = socket.AF_INET6 if force_v6 else socket.AF_INET
 	for sa in straddrs:
 		try:
-			ai = socket.getaddrinfo(sa, port)[0]
-			family = ai[0]
-			to = ai[4]
-			addr = ai[4][0]
+			ais = socket.getaddrinfo(sa, port)
+			family = ais[0][0]
+			to = ais[0][4]
+			addr = to[0]
 			
-			if auto_convert and socket.has_ipv6 and family == socket.AF_INET:
-				to = socket.getaddrinfo('::ffff:' + addr, port)[0][4]
-				common_family = socket.AF_INET6
+			if force_v6 and socket.has_ipv6 and family == socket.AF_INET:
+				# Do we have native v6 connection?
+				#for ai in ais:
+					#if ai[0] == socket.AF_INET6:
+						#family = socket.AF_INET
+						## TODO more and better stuff
+				#else:
+					to = socket.getaddrinfo('::ffff:' + addr, port, socket.AF_INET6)[0][4]
 			
 			addrs.append((family, addr, to))
 			
