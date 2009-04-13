@@ -212,38 +212,38 @@ class ConcurrentAdvertiser(Advertiser):
 	def __init__(self, services=[], aname=None, ignore_unavailable=True):
 		super(ConcurrentAdvertiser, self).__init__(services, aname, ignore_unavailable)
 		
-		# _caev_started, _caev_should_stop, and _caev_stopped have to be set to events by subclasses
+		# _cav_started, _cav_should_stop, and _cav_stopped have to be set to events by subclasses
 	
 	def start_blocking(self):
 		""" Start the advertiser in a new thread, but wait until it is ready """
 		
-		self._caev_started.clear()
+		self._cav_started.clear()
 		self.start()
-		self._caev_started.wait()
+		self._cav_started.wait()
 	
 	def run(self):
-		self._caev_should_stop.clear()
-		self._caev_stopped.clear()
+		self._cav_should_stop.clear()
+		self._cav_stopped.clear()
 		
 		try:
 			sock = self._init_sock()
 		finally:
-			self._caev_started.set()
+			self._cav_started.set()
 		
-		while not self._caev_should_stop.is_set():
+		while not self._cav_should_stop.is_set():
 			self._read_and_handle(sock)
 		
-		self._caev_stopped.set()
+		self._cav_stopped.set()
 	
 	def stop(self):
-		self._caev_should_stop.set()
+		self._cav_should_stop.set()
 		sock = _find_sock()
 		localhost = '::1' if sock.family == socket.AF_INET6 else '127.0.0.1'
-		sock.sendto(_MAGIC + _OPCODE_EMPTY + b'stop', 0, (localhost, self.port))
+		_send_packet(sock, (localhost, self.port), _OPCODE_EMPTY, _encode_string('stop'))
 	
 	def stop_blocking(self):
 		self.stop()
-		self._caev_stopped.wait()
+		self._cav_stopped.wait()
 
 class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
 	""" Run the advertiser in a separate thread.
@@ -257,9 +257,9 @@ class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
 		
 		self.setDaemon(daemon)
 		
-		self._caev_started = self._createEvent()
-		self._caev_should_stop = self._createEvent()
-		self._caev_stopped = self._createEvent()
+		self._cav_started = self._createEvent()
+		self._cav_should_stop = self._createEvent()
+		self._cav_stopped = self._createEvent()
 	
 	@staticmethod
 	def _createEvent():
@@ -283,13 +283,14 @@ try:
 			multiprocessing.Process.__init__(self)
 			
 			self.daemon = daemon
+			self._mpa_manager = multiprocessing.Manager()
 			
-			manager = multiprocessing.Manager()
-			self._caev_started = manager.Event()
-			self._caev_should_stop = manager.Event()
-			self._caev_stopped = manager.Event()
+			self._cav_started = multiprocessing.Event()
+			self._cav_should_stop = multiprocessing.Event()
+			self._cav_stopped = multiprocessing.Event()
 			
-			self.services = manager.list(services)
+			self.services = self._mpa_manager.list(services)
+	
 except ImportError:
 	pass
 
