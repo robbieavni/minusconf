@@ -175,7 +175,7 @@ class Advertiser(object):
 			if opcode == _OPCODE_QUERY:
 				self.__handle_query(sock, sender, data)
 			elif opcode == _OPCODE_EMPTY:
-				print("handling empty packet")
+				#print("handling empty packet")
 				pass
 			else:
 				MinusconfError('Invalid or unsupported opcode ' + struct.unpack('!B', opcode)).send(sock, sender)
@@ -212,41 +212,38 @@ class ConcurrentAdvertiser(Advertiser):
 	def __init__(self, services=[], aname=None, ignore_unavailable=True):
 		super(ConcurrentAdvertiser, self).__init__(services, aname, ignore_unavailable)
 		
-		# _started, _should_stop, and _stopped have to be set to events by subclasses
+		# _caev_started, _caev_should_stop, and _caev_stopped have to be set to events by subclasses
 	
 	def start_blocking(self):
 		""" Start the advertiser in a new thread, but wait until it is ready """
 		
-		self._started.clear()
+		self._caev_started.clear()
 		self.start()
-		self._started.wait()
+		self._caev_started.wait()
 	
 	def run(self):
-		self._should_stop.clear()
-		self._stopped.clear()
+		self._caev_should_stop.clear()
+		self._caev_stopped.clear()
 		
 		try:
 			sock = self._init_sock()
 		finally:
-			self._started.set()
+			self._caev_started.set()
 		
-		while not self._should_stop.is_set():
+		while not self._caev_should_stop.is_set():
 			self._read_and_handle(sock)
-			print (str(self._should_stop.is_set()))
 		
-		self._stopped.set()
+		self._caev_stopped.set()
 	
 	def stop(self):
-		self._should_stop.set()
-		print("Setting STOP event")
+		self._caev_should_stop.set()
 		sock = _find_sock()
 		localhost = '::1' if sock.family == socket.AF_INET6 else '127.0.0.1'
-		_send_packet(sock, (localhost, self.port), _OPCODE_EMPTY, _encode_string('stop'))
-		print("sent empty packet")
+		sock.sendto(_MAGIC + _OPCODE_EMPTY + b'stop', 0, (localhost, self.port))
 	
 	def stop_blocking(self):
 		self.stop()
-		self._stopped.wait()
+		self._caev_stopped.wait()
 
 class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
 	""" Run the advertiser in a separate thread.
@@ -260,9 +257,9 @@ class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
 		
 		self.setDaemon(daemon)
 		
-		self._started = self._createEvent()
-		self._should_stop = self._createEvent()
-		self._stopped = self._createEvent()
+		self._caev_started = self._createEvent()
+		self._caev_should_stop = self._createEvent()
+		self._caev_stopped = self._createEvent()
 	
 	@staticmethod
 	def _createEvent():
@@ -288,9 +285,9 @@ try:
 			self.daemon = daemon
 			
 			manager = multiprocessing.Manager()
-			self._started = manager.Event()
-			self._should_stop = manager.Event()
-			self._stopped = manager.Event()
+			self._caev_started = manager.Event()
+			self._caev_should_stop = manager.Event()
+			self._caev_stopped = manager.Event()
 			
 			self.services = manager.list(services)
 except ImportError:
