@@ -13,6 +13,7 @@ _PORT = 6376
 _ADDRESS_4 = '239.45.99.98'
 _ADDRESS_6 = 'ff08:0:0:6d69:6e75:7363:6f6e:6600'
 _ADDRESSES = [_ADDRESS_4]
+_FALLBACK_ADDRS = ['::1', '127.0.0.1']
 if socket.has_ipv6:
 	_ADDRESSES.append(_ADDRESS_6)
 _CHARSET = 'UTF-8'
@@ -27,6 +28,7 @@ except: # <2.6
 
 _MAGIC = _compat_bytes('\xad\xc3\xe6\xe7')
 _OPCODE_QUERY = _compat_bytes('\x01')
+_OPCODE_EMPTY = _compat_bytes('\x02')
 _OPCODE_ADVERTISEMENT = _compat_bytes('\x65')
 _OPCODE_ERROR = _compat_bytes('\x6f')
 _STRING_TERMINATOR = _compat_bytes('\x00')
@@ -130,61 +132,61 @@ class ServiceAt(_ImmutableStruct):
 			repr(self.port) + ', ' +
 			repr(self.addr) + ')')
 
-
-class Advertiser(threading.Thread):
-	""" Implementation of a -conf advertiser.
+class Advertiser(object):
+	""" Generic implementation of a -conf advertiser. You will probably want to use one of the subclasses.
 	If ignore_unavailable is set, unsupported addresses (typically IPv6) are silently ignored
 	"""
 	
-	def __init__(self, services=[], aname=None, port=_PORT, addresses=_ADDRESSES, daemonized=True, ignore_unavailable=True):
+	def __init__(self, services=[], aname=None, ignore_unavailable=True):
 		super(Advertiser, self).__init__()
 		
 		self.services = services
 		self.aname = aname if aname != None else socket.gethostname()
-		self.port = port
-		self.addresses = addresses
-		self.setDaemon(daemonized)
-		self.__ready = threading.Event()
-	
-	def start_blocking(self):
-		""" Start the advertiser in a new thread, but wait until it is ready """
-		
-		self.__ready.clear()
-		self.start()
-		self.__ready.wait()
+		self.port = _PORT
+		self.addresses = _ADDRESSES
+		self.ignore_unavailable = ignore_unavailable
 	
 	def run(self):
-		try:
-			common_family,addrfams = _addressfamilies(self.addresses, None, force_v6=False)
-			
-			sock = socket.socket(common_family, socket.SOCK_DGRAM)
-			sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-			sock.bind(('', self.port))
-			for fam,addr,to in addrfams:
-				_multicast_join_group(sock, fam, addr)
-		finally:
-			self.__ready.set()
+		sock = self._init_sock()
 		
-		self.__run_on_sock(sock)
-	
-	def __run_on_sock(self, sock):
-		""" Listens to queries on a fully configured socket. """
 		while True:
+			self._read_and_handle(sock)
+	
+	def _init_sock(self):
+		sock = _find_sock()
+		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		sock.bind(('', self.port))
+		
+		addrs = _resolve_addrs(self.addresses, None, self.ignore_unavailable, (sock.family,))
+		
+		for fam,to,orig_fam,orig_addr in addrs:
+			try:
+				_multicast_join_group(sock, orig_fam, orig_addr)
+			except socket.error:
+				if not self.ignore_unavailable:
+					raise
+		
+		return sock
+	
+	def _read_and_handle(self, sock):
+		try:
 			opcode, data, sender = _parse_packet(sock)
 			
 			if opcode == _OPCODE_QUERY:
-				try:
-					self.__handle_query(sock, sender, data)
-				# Comment the following lines out for proper error handling (Python 2.6+)
-				#except MinusconfError as mce:
-				#	mce.send(sock, sender)
-				#except BaseException as be:
-				#	MinusconfError(str(be)).send(sock, sender)
-				
-				# Silent error handling
-				except (MinusconfError, BaseException):
-					pass
-				
+				self.__handle_query(sock, sender, data)
+			elif opcode == _OPCODE_EMPTY:
+				print("handling empty packet")
+				pass
+			else:
+				MinusconfError('Invalid or unsupported opcode ' + struct.unpack('!B', opcode)).send(sock, sender)
+		# Comment the following lines out for proper error handling (Python 2.6+)
+		#except MinusconfError as mce:
+		#	mce.send(sock, sender)
+		#except ValueError as ve:
+		#	MinusconfError(str(ve)).send(sock, sender)
+		# Silent error handling
+		except (MinusconfError, ValueError):
+			pass
 	
 	def services_matching(self, stype, sname):
 		return filter(lambda svc: svc.matches_query(stype, sname), self.services)
@@ -206,21 +208,112 @@ class Advertiser(threading.Thread):
 				
 				_send_packet(sock, sender, _OPCODE_ADVERTISEMENT, rply)
 
+class ConcurrentAdvertiser(Advertiser):
+	def __init__(self, services=[], aname=None, ignore_unavailable=True):
+		super(ConcurrentAdvertiser, self).__init__(services, aname, ignore_unavailable)
+		
+		# _started, _should_stop, and _stopped have to be set to events by subclasses
+	
+	def start_blocking(self):
+		""" Start the advertiser in a new thread, but wait until it is ready """
+		
+		self._started.clear()
+		self.start()
+		self._started.wait()
+	
+	def run(self):
+		self._should_stop.clear()
+		self._stopped.clear()
+		
+		try:
+			sock = self._init_sock()
+		finally:
+			self._started.set()
+		
+		while not self._should_stop.is_set():
+			self._read_and_handle(sock)
+			print (str(self._should_stop.is_set()))
+		
+		self._stopped.set()
+	
+	def stop(self):
+		self._should_stop.set()
+		print("Setting STOP event")
+		sock = _find_sock()
+		localhost = '::1' if sock.family == socket.AF_INET6 else '127.0.0.1'
+		_send_packet(sock, (localhost, self.port), _OPCODE_EMPTY, _encode_string('stop'))
+		print("sent empty packet")
+	
+	def stop_blocking(self):
+		self.stop()
+		self._stopped.wait()
+
+class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
+	""" Run the advertiser in a separate thread.
+	
+	This is what most applications want, but must not be used multiple times on the same port lest the OS can't distinguish which socket should receive messages.
+	"""
+	
+	def __init__(self, services=[], aname=None, ignore_unavailable=True, daemon=True):
+		ConcurrentAdvertiser.__init__(self, services, aname, ignore_unavailable)
+		threading.Thread.__init__(self)
+		
+		self.setDaemon(daemon)
+		
+		self._started = self._createEvent()
+		self._should_stop = self._createEvent()
+		self._stopped = self._createEvent()
+	
+	@staticmethod
+	def _createEvent():
+		res = threading.Event()
+		
+		if not hasattr(res, 'is_set'): # Python<2.6
+			res.is_set = res.isSet
+		
+		return res
+
+try:
+	import multiprocessing
+	
+	class MultiprocessingAdvertiser(ConcurrentAdvertiser, multiprocessing.Process):
+		"""
+		multiprocessing is only available for Python 2.6+.
+		See http://code.google.com/p/python-multiprocessing/ for a backport.
+		"""
+		def __init__(self, services=[], aname=None, ignore_unavailable=True, daemon=True):
+			ConcurrentAdvertiser.__init__(self, services, aname, ignore_unavailable)
+			multiprocessing.Process.__init__(self)
+			
+			self.daemon = daemon
+			
+			manager = multiprocessing.Manager()
+			self._started = manager.Event()
+			self._should_stop = manager.Event()
+			self._stopped = manager.Event()
+			
+			self.services = manager.list(services)
+except ImportError:
+	pass
+
+
 class Seeker(threading.Thread):
 	""" find_callback is called with (this_seeker,found_service_at)
 	error_callback is called with (this seeker, sender, error message) """
-	def __init__(self, servicetype="", advertisername="", servicename="", timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None, error_callback=None, daemonized=True):
+	def __init__(self, servicetype='', advertisername='', servicename='', timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, fallback_addrs=_FALLBACK_ADDRS, find_callback=None, error_callback=None, daemonized=True, ignore_senderrors=True):
 		super(Seeker, self).__init__()
 		
 		self.timeout = timeout
 		self.port = port
 		self.addresses = addresses
+		self.fallback_addrs = fallback_addrs
 		self.find_callback = find_callback
 		self.error_callback = error_callback
 		self.setDaemon(daemonized)
+		self.ignore_senderrors = ignore_senderrors
 		self.reset(servicetype, advertisername, servicename)
 	
-	def reset(self, servicetype="", advertisername="", servicename=""):
+	def reset(self, servicetype='', advertisername='', servicename=''):
 		self.servicetype = servicetype
 		self.advertisername = advertisername
 		self.servicename = servicename
@@ -228,24 +321,39 @@ class Seeker(threading.Thread):
 		self.results = set()
 	
 	def run(self):
-		common_family,addrfams = _addressfamilies(self.addresses, self.port, force_v6=True)
-		
-		sock = socket.socket(common_family, socket.SOCK_DGRAM)
+		sock = _find_sock()
+		addrs = _resolve_addrs(self.addresses, self.port, ignore_unavailable=True, protocols=[sock.family])
 		_multicast_configure_sender(sock, _TTL)
 		
-		for fam,addr,to in addrfams:
-			self.__send_query(sock, to)
+		if self.__send_queries(sock, self.addresses) == 0:
+			# We might not be connected to *any* network, let's try to work anyway
+			for fa in self.fallback_addrs:
+				if fa is None:
+					raise Exception('Could not send any queries')
+				
+				if self.__send_queries(sock, (fa,)) > 0:
+					break
 		
 		self.__read_replies(sock)
 	
+	def run_forever(self):
+		self.timeout = None
+		self.run()
+	
 	def __read_replies(self, sock):
-		starttime = time.time()
+		if self.timeout == None:
+			sock.settimeout(None)
+		else:
+			starttime = time.time()
+		
 		while True:
-			timeout = self.timeout - (time.time() - starttime)
-			if timeout < 0:
-				break
+			if self.timeout != None:
+				timeout = self.timeout - (time.time() - starttime)
+				if timeout < 0:
+					break
+				
+				sock.settimeout(timeout)
 			
-			sock.settimeout(timeout)
 			try:
 				opcode,data,sender = _parse_packet(sock)
 				
@@ -258,9 +366,25 @@ class Seeker(threading.Thread):
 						error_str = '[Error when trying to read error message ' + repr(data) + ']'
 					
 					if self.error_callback != None:
-							self.error_callback(self, sender, error_str)
+						self.error_callback(self, sender, error_str)
 			except socket.timeout:
 				break
+	
+	def __send_queries(self, sock, straddrs):
+		""" Sends queries to multiple addresses. Returns the number of successful queries. """
+		
+		res = 0
+		
+		addrs = _resolve_addrs(straddrs, self.port, self.ignore_senderrors, [sock.family])
+		for addr in addrs:
+			try:
+				self.__send_query(sock, addr[1])
+				res += 1
+			except:
+				if not self.ignore_senderrors:
+					raise
+		
+		return res
 	
 	def __send_query(self, sock, to):
 		binqry = _encode_string(self.advertisername)
@@ -287,13 +411,14 @@ class Seeker(threading.Thread):
 				self.find_callback(self, result)
 
 def _send_packet(sock, to, opcode, data):
+	#print("Sending " + str(data) + " to " + str(to))
 	sock.sendto(_MAGIC + opcode + data, 0, to)
 
 def _parse_packet(sock):
 	""" Returns a tupel (opcode, data, sender). opcode is None if this isn't a -conf packet."""
 	
 	data, sender = sock.recvfrom(_MAX_PACKET_SIZE)
-	
+	#print("Got " + str(data) + " from " + str(sender))
 	if (len(data) < len(_MAGIC) + 1) or (_MAGIC != data[:len(_MAGIC)]):
 		# Wrong protocol
 		return (None, None, None)
@@ -338,40 +463,40 @@ def _multicast_join_group(sock, family, addr):
 	else:
 		raise ValueError('Unsupported protocol family ' + family)
 
-def _addressfamilies(straddrs, port, ignore_unavailable=True, force_v6=True):
-	""" Returns a tupel (common address family, ((family, addr, to), ...)).
-	Common address family is IPv4 iff only IPv4 addresses have been supplied.
-	Note that to may be of a different address family, but addr is guaranteed to be of the same family.
-	If ignore_unavailable is set, addresses for unavailable protocols are ignored.
-	If force_v6 is set, IPv4 addresses are """
+def _resolve_addrs(straddrs, port, ignore_unavailable=False, protocols=[socket.AF_INET, socket.AF_INET6]):
+	""" Returns a tupel of tupels of (family, to, original_addr_family, original_addr).
 	
-	addrs = [] # Addresses
-	common_family = socket.AF_INET6 if force_v6 else socket.AF_INET
+	If ignore_unavailable is set, addresses for unavailable protocols are ignored.
+	protocols determines the protocol family indices supported by the socket in use. """
+	
+	res = []
 	for sa in straddrs:
 		try:
 			ais = socket.getaddrinfo(sa, port)
-			family = ais[0][0]
-			to = ais[0][4]
-			addr = to[0]
-			
-			if force_v6 and socket.has_ipv6 and family == socket.AF_INET:
-				# Do we have native v6 connection?
-				#for ai in ais:
-					#if ai[0] == socket.AF_INET6:
-						#family = socket.AF_INET
-						## TODO more and better stuff
-				#else:
-					to = socket.getaddrinfo('::ffff:' + addr, port, socket.AF_INET6)[0][4]
-			
-			addrs.append((family, addr, to))
-			
-			if family == socket.AF_INET6:
-				common_family = socket.AF_INET6
+			for ai in ais:
+				if ai[0] in protocols:
+					res.append((ai[0], ai[4], ai[0], ai[4][0]))
+					break
+			else:
+				# Try to convert from IPv4 to IPv6
+				ai = ais[0]
+				if ai[0] == socket.AF_INET and socket.AF_INET6 in protocols:
+					to = socket.getaddrinfo('::ffff:' + ai[4][0], port, socket.AF_INET6)[0][4]
+					res.append((socket.AF_INET6, to, ai[0], ai[4][0]))
 		except socket.gaierror:
 			if not ignore_unavailable:
 				raise
 	
-	return (common_family,addrs)
+	return res
+
+def _find_sock():
+	""" Create a UDP socket """
+	if socket.has_ipv6:
+		try:
+			return socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+		except socket.gaierror:
+			pass # Platform lied about IPv6 support
+	return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 def _main():
 	""" CLI interface """
@@ -519,5 +644,5 @@ if not '_inet_pton' in dir():
 	else:
 		_inet_pton = _compat_inet_pton
 
-if __name__ == "__main__":
+if __name__ == '__main__':
 	_main()
