@@ -13,7 +13,6 @@ _PORT = 6376
 _ADDRESS_4 = '239.45.99.98'
 _ADDRESS_6 = 'ff08:0:0:6d69:6e75:7363:6f6e:6600'
 _ADDRESSES = [_ADDRESS_4]
-_FALLBACK_ADDRS = ['::1', '127.0.0.1']
 if socket.has_ipv6:
 	_ADDRESSES.append(_ADDRESS_6)
 _CHARSET = 'UTF-8'
@@ -28,7 +27,6 @@ except: # <2.6
 
 _MAGIC = _compat_bytes('\xad\xc3\xe6\xe7')
 _OPCODE_QUERY = _compat_bytes('\x01')
-_OPCODE_EMPTY = _compat_bytes('\x02')
 _OPCODE_ADVERTISEMENT = _compat_bytes('\x65')
 _OPCODE_ERROR = _compat_bytes('\x6f')
 _STRING_TERMINATOR = _compat_bytes('\x00')
@@ -147,14 +145,18 @@ class Advertiser(object):
 		self.ignore_unavailable = ignore_unavailable
 	
 	def run(self):
-		sock = self._init_sock()
+		self._init_advertiser()
 		
 		while True:
-			self._read_and_handle(sock)
+			rawdata,sender = self._sock.recvfrom(_MAX_PACKET_SIZE)
+			self._handle_packet(rawdata, sender)
 	
-	def _init_sock(self):
+	def _init_advertiser(self):
 		sock = _find_sock()
-		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, struct.pack('@I', 1))
+		sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, struct.pack('@I', 1))
+		if sock.family == socket.AF_INET6:
+			sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_LOOP, struct.pack('@I', 1))
 		sock.bind(('', self.port))
 		
 		addrs = _resolve_addrs(self.addresses, None, self.ignore_unavailable, (sock.family,))
@@ -166,32 +168,25 @@ class Advertiser(object):
 				if not self.ignore_unavailable:
 					raise
 		
-		return sock
+		self._sock = sock
 	
-	def _read_and_handle(self, sock):
+	def _handle_packet(self, rawdata, sender):
 		try:
-			opcode, data, sender = _parse_packet(sock)
+			opcode, data = _parse_packet(rawdata)
 			
 			if opcode == _OPCODE_QUERY:
-				self.__handle_query(sock, sender, data)
-			elif opcode == _OPCODE_EMPTY:
-				#print("handling empty packet")
-				pass
+				self._handle_query(sender, data)
+			elif opcode == None:
+				raise  MinusconfError('Minusconf magic missing. See http://code.google.com/p/minusconf/source/browse/trunk/protocol.txt for details.')
 			else:
-				MinusconfError('Invalid or unsupported opcode ' + struct.unpack('!B', opcode)).send(sock, sender)
-		# Comment the following lines out for proper error handling (Python 2.6+)
-		#except MinusconfError as mce:
-		#	mce.send(sock, sender)
-		#except ValueError as ve:
-		#	MinusconfError(str(ve)).send(sock, sender)
-		# Silent error handling
-		except (MinusconfError, ValueError):
-			pass
+				raise MinusconfError('Invalid or unsupported opcode ' + struct.unpack('!B', opcode))
+		except MinusconfError, mce:
+			mce.send(self._sock, sender)
 	
 	def services_matching(self, stype, sname):
 		return filter(lambda svc: svc.matches_query(stype, sname), self.services)
 	
-	def __handle_query(self, sock, sender, qrydata):
+	def _handle_query(self, sender, qrydata):
 		qaname,p = _decode_string(qrydata, 0)
 		qstype,p = _decode_string(qrydata, p)
 		qsname,p = _decode_string(qrydata, p)
@@ -206,51 +201,31 @@ class Advertiser(object):
 					_encode_string(svc.port)
 					)
 				
-				_send_packet(sock, sender, _OPCODE_ADVERTISEMENT, rply)
+				_send_packet(self._sock, sender, _OPCODE_ADVERTISEMENT, rply)
 
 class ConcurrentAdvertiser(Advertiser):
-	def __init__(self, services=[], aname=None, ignore_unavailable=True):
-		super(ConcurrentAdvertiser, self).__init__(services, aname, ignore_unavailable)
-		
-		# _cav_started, _cav_should_stop, and _cav_stopped have to be set to events by subclasses
+	# Subclasses must set _cav_started to an event
 	
 	def start_blocking(self):
-		""" Start the advertiser in a new thread, but wait until it is ready """
+		""" Start the advertiser in the background, but wait until it is ready """
 		
 		self._cav_started.clear()
 		self.start()
 		self._cav_started.wait()
 	
-	def run(self):
-		self._cav_should_stop.clear()
-		self._cav_stopped.clear()
-		
+	def _init_advertiser(self):
 		try:
-			sock = self._init_sock()
+			super(ConcurrentAdvertiser, self)._init_advertiser()
 		finally:
 			self._cav_started.set()
-		
-		while not self._cav_should_stop.is_set():
-			self._read_and_handle(sock)
-		
-		self._cav_stopped.set()
 	
 	def stop(self):
-		self._cav_should_stop.set()
-		sock = _find_sock()
-		localhost = '::1' if sock.family == socket.AF_INET6 else '127.0.0.1'
-		_send_packet(sock, (localhost, self.port), _OPCODE_EMPTY, _encode_string('stop'))
+		raise NotImplementedError()
 	
 	def stop_blocking(self):
-		self.stop()
-		self._cav_stopped.wait()
+		raise NotImplementedError()
 
 class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
-	""" Run the advertiser in a separate thread.
-	
-	This is what most applications want, but must not be used multiple times on the same port lest the OS can't distinguish which socket should receive messages.
-	"""
-	
 	def __init__(self, services=[], aname=None, ignore_unavailable=True, daemon=True):
 		ConcurrentAdvertiser.__init__(self, services, aname, ignore_unavailable)
 		threading.Thread.__init__(self)
@@ -258,8 +233,25 @@ class ThreadAdvertiser(ConcurrentAdvertiser, threading.Thread):
 		self.setDaemon(daemon)
 		
 		self._cav_started = self._createEvent()
-		self._cav_should_stop = self._createEvent()
-		self._cav_stopped = self._createEvent()
+		self._ta_should_stop = self._createEvent()
+	
+	def run(self):
+		self._ta_should_stop.clear()
+		
+		self._init_advertiser()
+		
+		while True:
+			rawdata,sender = self._sock.recvfrom(_MAX_PACKET_SIZE)
+			if self._ta_should_stop.is_set():
+				break
+			self._handle_packet(rawdata, sender)
+	
+	def stop(self):
+		self._ta_should_stop.set()
+	
+	def stop_blocking(self):
+		""" Stop the service and wait for it to be cleaned up. """
+		self.stop() # The thread will be there, but will terminate upon the next message
 	
 	@staticmethod
 	def _createEvent():
@@ -283,14 +275,17 @@ try:
 			multiprocessing.Process.__init__(self)
 			
 			self.daemon = daemon
-			self._mpa_manager = multiprocessing.Manager()
-			
 			self._cav_started = multiprocessing.Event()
-			self._cav_should_stop = multiprocessing.Event()
-			self._cav_stopped = multiprocessing.Event()
 			
+			self._mpa_manager = multiprocessing.Manager()
 			self.services = self._mpa_manager.list(services)
-	
+		
+		def stop(self):
+			self.terminate()
+		
+		def stop_blocking(self):
+			self.stop()
+			self.join()
 except ImportError:
 	pass
 
@@ -298,13 +293,12 @@ except ImportError:
 class Seeker(threading.Thread):
 	""" find_callback is called with (this_seeker,found_service_at)
 	error_callback is called with (this seeker, sender, error message) """
-	def __init__(self, servicetype='', advertisername='', servicename='', timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, fallback_addrs=_FALLBACK_ADDRS, find_callback=None, error_callback=None, daemonized=True, ignore_senderrors=True):
+	def __init__(self, servicetype='', advertisername='', servicename='', timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None, error_callback=None, daemonized=True, ignore_senderrors=True):
 		super(Seeker, self).__init__()
 		
 		self.timeout = timeout
 		self.port = port
 		self.addresses = addresses
-		self.fallback_addrs = fallback_addrs
 		self.find_callback = find_callback
 		self.error_callback = error_callback
 		self.setDaemon(daemonized)
@@ -323,22 +317,14 @@ class Seeker(threading.Thread):
 		addrs = _resolve_addrs(self.addresses, self.port, ignore_unavailable=True, protocols=[sock.family])
 		_multicast_configure_sender(sock, _TTL)
 		
-		if self.__send_queries(sock, self.addresses) == 0:
-			# We might not be connected to *any* network, let's try to work anyway
-			for fa in self.fallback_addrs:
-				if fa is None:
-					raise Exception('Could not send any queries')
-				
-				if self.__send_queries(sock, (fa,)) > 0:
-					break
-		
-		self.__read_replies(sock)
+		if self._send_queries(sock, self.addresses) > 0:
+			self._read_replies(sock)
 	
 	def run_forever(self):
 		self.timeout = None
 		self.run()
 	
-	def __read_replies(self, sock):
+	def _read_replies(self, sock):
 		if self.timeout == None:
 			sock.settimeout(None)
 		else:
@@ -353,22 +339,24 @@ class Seeker(threading.Thread):
 				sock.settimeout(timeout)
 			
 			try:
-				opcode,data,sender = _parse_packet(sock)
-				
-				if opcode == _OPCODE_ADVERTISEMENT:
-					self.__handle_advertisement(data, sender)
-				elif opcode == _OPCODE_ERROR:
-					try:
-						error_str = _decode_string(data, 0)[0]
-					except:
-						error_str = '[Error when trying to read error message ' + repr(data) + ']'
-					
-					if self.error_callback != None:
-						self.error_callback(self, sender, error_str)
+				rawdata,sender = sock.recvfrom(_MAX_PACKET_SIZE)
 			except socket.timeout:
 				break
+			
+			opcode,data = _parse_packet(rawdata)
+			
+			if opcode == _OPCODE_ADVERTISEMENT:
+				self._handle_advertisement(data, sender)
+			elif opcode == _OPCODE_ERROR:
+				try:
+					error_str = _decode_string(data, 0)[0]
+				except:
+					error_str = '[Error when trying to read error message ' + repr(data) + ']'
+				
+				if self.error_callback != None:
+					self.error_callback(self, sender, error_str)
 	
-	def __send_queries(self, sock, straddrs):
+	def _send_queries(self, sock, straddrs):
 		""" Sends queries to multiple addresses. Returns the number of successful queries. """
 		
 		res = 0
@@ -376,7 +364,7 @@ class Seeker(threading.Thread):
 		addrs = _resolve_addrs(straddrs, self.port, self.ignore_senderrors, [sock.family])
 		for addr in addrs:
 			try:
-				self.__send_query(sock, addr[1])
+				self._send_query(sock, addr[1])
 				res += 1
 			except:
 				if not self.ignore_senderrors:
@@ -384,14 +372,14 @@ class Seeker(threading.Thread):
 		
 		return res
 	
-	def __send_query(self, sock, to):
+	def _send_query(self, sock, to):
 		binqry = _encode_string(self.advertisername)
 		binqry += _encode_string(self.servicetype)
 		binqry += _encode_string(self.servicename)
 		
 		_send_packet(sock, to, _OPCODE_QUERY, binqry)
 	
-	def __handle_advertisement(self, bindata, sender):
+	def _handle_advertisement(self, bindata, sender):
 		aname,p = _decode_string(bindata, 0)
 		stype,p = _decode_string(bindata, p)
 		sname,p = _decode_string(bindata, p)
@@ -400,31 +388,28 @@ class Seeker(threading.Thread):
 		
 		svca = ServiceAt(aname, stype, sname, location, port, sender[0])
 		if svca.matches_query_at(self.advertisername, self.servicetype, self.servicename):
-			self.__found_result(svca)
+			self._found_result(svca)
 	
-	def __found_result(self, result):
+	def _found_result(self, result):
 		if not (result in self.results):
 			self.results.add(result)
 			if self.find_callback != None:
 				self.find_callback(self, result)
 
 def _send_packet(sock, to, opcode, data):
-	#print("Sending " + str(data) + " to " + str(to))
 	sock.sendto(_MAGIC + opcode + data, 0, to)
 
-def _parse_packet(sock):
-	""" Returns a tupel (opcode, data, sender). opcode is None if this isn't a -conf packet."""
+def _parse_packet(rawdata):
+	""" Returns a tupel (opcode, minusconf-data). opcode is None if this isn't a -conf packet."""
 	
-	data, sender = sock.recvfrom(_MAX_PACKET_SIZE)
-	#print("Got " + str(data) + " from " + str(sender))
-	if (len(data) < len(_MAGIC) + 1) or (_MAGIC != data[:len(_MAGIC)]):
+	if (len(rawdata) < len(_MAGIC) + 1) or (_MAGIC != rawdata[:len(_MAGIC)]):
 		# Wrong protocol
-		return (None, None, None)
+		return (None, None)
 	
-	opcode = data[len(_MAGIC):len(_MAGIC)+1]
-	payload = data[len(_MAGIC)+1:]
+	opcode = rawdata[len(_MAGIC):len(_MAGIC)+1]
+	payload = rawdata[len(_MAGIC)+1:]
 	
-	return (opcode, payload, sender)
+	return (opcode, payload)
 
 def _encode_string(val):
 	return val.encode(_CHARSET) + _STRING_TERMINATOR
@@ -444,10 +429,10 @@ def _string_match(query, value):
 
 def _multicast_configure_sender(sock, ttl=None):
 	if ttl != None:
-		ttl_bin = struct.pack('@i', ttl)
+		ttl_bin = struct.pack('@I', ttl)
 		
 		sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl_bin)
-		if socket.has_ipv6:
+		if sock.family == socket.AF_INET6:
 			sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, ttl_bin)
 
 def _multicast_join_group(sock, family, addr):

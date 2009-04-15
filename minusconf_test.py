@@ -71,26 +71,38 @@ class MinusconfUnitTest(unittest.TestCase):
 		a_mp = minusconf.MultiprocessingAdvertiser([], 'unittest.advertiser-multiprocessing-single')
 		self._runSingleConcurrentAdvertiserTest(a_mp)
 	
-	def testMultiAdvertisers(self):
-		return # TODO
-		a1 = minusconf.MultiprocessingAdvertiser([self.svc2], 'unittest.advertiser1')
-		a1.start_blocking()
-		a2 = minusconf.MultiprocessingAdvertiser([self.svc3], 'unittest.advertiser2')
-		a2.start_blocking()
+	def testMultiThreadAdvertisers(self):
+		a1 = minusconf.ThreadAdvertiser([], 'unittest.multitest.ThreadAdvertiser1')
+		a2 = minusconf.ThreadAdvertiser([], 'unittest.multitest.ThreadAdvertiser2')
 		
-		## TODO failing
-		#self.assertEquals(self.svc2.stype, self.svc3.stype)
-		#self.assertEquals(self.svc2.stype, self.svc4.stype)
+		self._runMultiTest([
+			(a1, [self.svc1, self.svc2, self.svc3]),
+			(a2, [self.svc3, self.svc4, self.svc5]),
+			], self.svc2.stype)
+	
+	def testMultiMultiprocessingAdvertisers(self):
+		a1 = minusconf.MultiprocessingAdvertiser([], 'unittest.multitest.MultiprocessingAdvertiser1')
+		a2 = minusconf.MultiprocessingAdvertiser([], 'unittest.multitest.MultiprocessingAdvertiser2')
 		
-		#a1.services.append(self.svc2)
-		#a2.services.append(self.svc4)
+		self._runMultiTest([
+			(a1, [self.svc1, self.svc2, self.svc3]),
+			(a2, [self.svc3, self.svc4, self.svc5]),
+			], self.svc2.stype)
+	
+	def testMultiCombinedAdvertisers(self):
+		mpa1 = minusconf.MultiprocessingAdvertiser([], 'unittest.multictest.MultiprocessingAdvertiser1')
+		mpa2 = minusconf.MultiprocessingAdvertiser([], 'unittest.multictest.MultiprocessingAdvertiser2')
+		ta1 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser1')
+		ta2 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser2')
+		ta3 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser3')
 		
-		#self._runTestSeek([self.svc2, self.svc3, self.svc4, self.svc5], self.svc2.stype)
-		
-		a1.stop_blocking()
-		a2.stop_blocking()
-		
-		self._runTestSeek([], self.svc2.stype)
+		self._runMultiTest([
+			(mpa1, [self.svc1, self.svc2, self.svc3]),
+			(mpa2, [self.svc3]),
+			(ta1, [self.svc2, self.svc4]),
+			(ta2, [self.svc1, self.svc5]),
+			(ta3, []),
+			], self.svc2.stype)
 	
 	def testInetPton(self):
 		bts = minusconf._compat_bytes
@@ -148,8 +160,12 @@ class MinusconfUnitTest(unittest.TestCase):
 			testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET6]), '::ffff:1.2.3.4', socket.AF_INET6)
 		testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET]), '1.2.3.4')
 		
-		self.assertTrue(len(ra(['404.does-not-exist.example.com'], None, True)) == 0)
-		self.assertRaises(socket.gaierror, ra, ['404.does-not-exist.example.com'], None, False)
+		# TODO adequatly test invalid address resolution
+		#self.assertTrue(len(ra(['1.2.3.4.5'], None, True)) == 0)
+		#self.assertRaises(socket.gaierror, ra, ['1.2.3.4.5'], None, False)
+	
+	def testNUL(self):
+		return # TODO
 	
 	def testMalformed(self):
 		return
@@ -207,6 +223,31 @@ class MinusconfUnitTest(unittest.TestCase):
 					raise
 		
 		return s.results
+	
+	def _runMultiTest(self, advertiser_services, stype):
+		try:
+			for av,svcs in advertiser_services:
+				av.start_blocking()
+			
+			self._runTestSeek([], stype)
+			
+			expected_services = set()
+			for av,svcs in advertiser_services:
+				av.services += svcs
+				expected_services.update(filter(lambda svc: svc.stype == stype, svcs))
+			
+			self._runTestSeek(expected_services, stype)
+			
+			for av,svcs in advertiser_services:
+				av.stop_blocking()
+			
+			self._runTestSeek([], stype)
+		finally:
+			for av,svcs in advertiser_services:
+				try:
+					av.stop_blocking()
+				except:
+					pass
 	
 	@staticmethod
 	def _testIPv6Support():
