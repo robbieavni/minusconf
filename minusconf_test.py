@@ -160,7 +160,7 @@ class MinusconfUnitTest(unittest.TestCase):
 			testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET6]), '::ffff:1.2.3.4', socket.AF_INET6)
 		testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET]), '1.2.3.4')
 		
-		self.assertEquals(ra(['::1::2'], None, True), [])
+		self.assertEquals(ra(['::1::2', '1.2.3.4', '::2::1'], None, True), [(socket.AF_INET, ('1.2.3.4', 0), socket.AF_INET, '1.2.3.4')])
 		self.assertRaises(socket.gaierror, ra, ['::1::2'], None, False)
 	
 	def testNUL(self):
