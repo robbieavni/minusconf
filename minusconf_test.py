@@ -9,16 +9,17 @@ import time
 class MinusconfUnitTest(unittest.TestCase):
 	def setUp(self):
 		try:
-			sharp_s = unichr(223)
+			self._sharp_s = unichr(223)
 		except: # Python 3+
-			sharp_s = chr(223)
+			self._sharp_s = chr(223)
+		sz = self._sharp_s
 		
 		machineid = socket.gethostname()
-		self.svc1 = minusconf.Service('-conf-test-service', 'strangeport', 'some name')
-		self.svc2 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'strangeport', 'some name')
-		self.svc3 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'svcp3', 'svc3: sharp s = ' + sharp_s)
-		self.svc4 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'svcp4', 'svc4')
-		self.svc5 = minusconf.Service('-conf-test-service' + sharp_s + machineid, 'svcp5', 'svc5')
+		self.svc1 = minusconf.Service('-conf-test-service-strange-' + machineid, 'strangeport', 'some name')
+		self.svc2 = minusconf.Service('-conf-test-service' + sz + machineid, 'strangeport', 'some name', 'some location')
+		self.svc3 = minusconf.Service('-conf-test-service' + sz + machineid, 'svcp3', 'svc3: sharp s = ' + sz)
+		self.svc4 = minusconf.Service('-conf-test-service' + sz + machineid, 'svcp4', 'svc4', 'Buy More basement')
+		self.svc5 = minusconf.Service('-conf-test-service' + sz + machineid, 'svcp5', 'svc5')
 	
 	def testServiceMatching(self):
 		a = minusconf.Advertiser()
@@ -164,11 +165,47 @@ class MinusconfUnitTest(unittest.TestCase):
 		self.assertRaises(socket.gaierror, ra, ['::1::2'], None, False)
 	
 	def testNUL(self):
+		optlen = 4
+		for i in range(optlen):
+			toptions = ['x'] * optlen
+			toptions[i] = 'null\x00byte'
+			
+			self.assertRaises(ValueError, minusconf.Service, *toptions)
+		
+		optlen = 3
+		for i in range(optlen):
+			toptions = ['x'] * optlen
+			toptions[i] = 'null\x00byte'
+			
+			self.assertRaises(ValueError, minusconf.Seeker, *toptions)
+		
+		self.assertRaises(ValueError, minusconf.Advertiser, [], 'advertiser\x00name')
+	
+	def testIntPort(self):
 		return # TODO
+		svc = minusconf.Service('stype', 42, 'sname')
+		x = 'a' + self._sharp_s + str(svc) + repr(svc)
+	
+	def testSeekerSanity(self):
+		stype = 'stype ' + self._sharp_s
+		aname = 'aname ' + self._sharp_s
+		sname = 'sname ' + self._sharp_s + ' (wienerlicious)'
+		s = minusconf.Seeker(stype, aname, sname)
+		
+		self.assertEquals(s.stype, stype)
+		self.assertEquals(s.aname, aname)
+		self.assertEquals(s.sname, sname)
+		
+		s.stype = stype
+		s.aname = aname
+		s.sname = sname
+		
+		self.assertEquals(s.stype, stype)
+		self.assertEquals(s.aname, aname)
+		self.assertEquals(s.sname, sname)
 	
 	def testMalformed(self):
-		return
-		#TODO
+		return #TODO
 	
 	def _runSingleConcurrentAdvertiserTest(self, advertiser):
 		advertiser.start_blocking()
@@ -203,18 +240,21 @@ class MinusconfUnitTest(unittest.TestCase):
 		svc_eq = lambda svc, exp: (svc.sname == exp.sname and svc.stype == exp.stype and svc.port == exp.port)
 		svc_in = lambda svc, svcs: any((svc_eq(svc, s) for s in svcs))
 		def find_callback(seeker,svcat):
-			self.assertTrue(svc_in(svcat, services))
-			self.assertTrue(svcat.aname != "")
+			if not svc_in(svcat, services):
+				raise AssertionError('Got ' + repr(svcat) + ', expected one of ' + repr(services))
+			self.assertTrue(svcat.aname != '')
 		s.find_callback = find_callback
 		s.error_callback = lambda seeker,serveraddr,errorstr: self.fail('Got error ' + repr(errorstr) + ' from ' + repr(serveraddr))
 		
+		# TODO special-case services == []
 		for to in timeouts:
 			try:
 				s.timeout = to
 				s.run()
 				
 				for svc in services:
-					self.assertTrue(svc_in(svc, s.results))
+					if not svc_in(svc, s.results):
+						raise AssertionError('Missing ' + repr(svc) + ', got ' + repr(s.results))
 				
 				break
 			except AssertionError:
