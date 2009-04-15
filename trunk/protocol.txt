@@ -15,10 +15,6 @@ For the rest of this text, let a string(S) consist of any number of Unicode char
 Asks for service locations. An empty string matches any value.
 servicetype can be any name in http://www.iana.org/assignments/port-numbers or another name server and client agree to use.
 
-2 Empty() (optional)
-
-Should be ignored. The intention of this message is to allow other threads to stop a waiting advertiser thread.
-
 101 Advertisement (S advertisername, S servicetype, S servicename, S location, S port)
 
 A response to a query. advertisername, servicetype and servicename are usually copied from the query. If the client asked for ""(any value), advertisers should fill in a preferred value. (Because an empty servicetype makes no sense, advertisers must fill in a value in this case). If location is not empty, it is a string representation of an address that must be used to initiate a connection. The port argument is intended for a string representation of a UDP or TCP port, but can also be used to transfer any other application-specific data. Servers may send multiple advertisement packages, hence clients must ignore repeated identical advertisements.
