@@ -2,6 +2,10 @@
 """
 Implementation of the minusconf protocol. See http://code.google.com/p/minusconf/ for details.
 Apache License 2.0, see the LICENSE file for details.
+
+Most users will want a (Thread)Advertiser to advertise their server's location and a Seeker to find out the locations of servers and report them to a client program.
+
+
 """
 
 import struct
@@ -50,8 +54,8 @@ class _ImmutableStruct(object):
 		raise TypeError("This structure is immutable")
 	__delattr__ = __setattr__
 	
-	def __init__(self, values):
-		for (k,v) in values.items():
+	def __init__(self, **kwargs):
+		for k,v in kwargs.items():
 			super(_ImmutableStruct, self).__setattr__(k, v)
 	
 	def __eq__(self, other):
@@ -75,11 +79,18 @@ class _ImmutableStruct(object):
 	def __hash__(self):
 		return hash(sum((hash(i) for i in self.__dict__.items())))
 
-class Service(_ImmutableStruct):
+class _MinusconfImmutableStruct(_ImmutableStruct):
+	def __init__(self, **kwargs):
+		for v in kwargs.values():
+			_check_val(v)
+		
+		super(_MinusconfImmutableStruct, self).__init__(**kwargs)
+
+class Service(_MinusconfImmutableStruct):
 	""" Helper structure for a service."""
 	
 	def __init__(self, stype, port, sname='', location=''):
-		super(Service, self).__init__({'stype': stype, 'port':port, 'sname': sname, 'location':location})
+		super(Service, self).__init__(stype=stype, port=port, sname=sname, location=location)
 	
 	def matches_query(self, stype, sname):
 		return _string_match(stype, self.stype) and _string_match(sname, self.sname)
@@ -98,12 +109,12 @@ class Service(_ImmutableStruct):
 			repr(self.sname) + ', ' +
 			repr(self.location) + ')')
 
-class ServiceAt(_ImmutableStruct):
+class ServiceAt(_MinusconfImmutableStruct):
 	""" A service returned by an advertiser"""
 	
 	def __init__(self, aname, stype, sname, location, port, addr):
 		super(ServiceAt, self).__init__(
-			{'aname': aname, 'stype': stype, 'sname': sname, 'location': location, 'port': port, 'addr':addr}
+			aname=aname, stype=stype, sname=sname, location=location, port=port, addr=addr
 		)
 	
 	def matches_query_at(self, aname, stype, sname):
@@ -144,6 +155,11 @@ class Advertiser(object):
 		self.addresses = _ADDRESSES
 		self.ignore_unavailable = ignore_unavailable
 	
+	def _set_aname(self, aname):
+		_check_val(aname)
+		self._aname = aname
+	aname = property(fget=lambda self:self._aname, fset=_set_aname)
+	
 	def run(self):
 		self._init_advertiser()
 		
@@ -177,11 +193,14 @@ class Advertiser(object):
 			if opcode == _OPCODE_QUERY:
 				self._handle_query(sender, data)
 			elif opcode == None:
-				raise  MinusconfError('Minusconf magic missing. See http://code.google.com/p/minusconf/source/browse/trunk/protocol.txt for details.')
+				raise MinusconfError('Minusconf magic missing. See http://code.google.com/p/minusconf/source/browse/trunk/protocol.txt for details.')
 			else:
 				raise MinusconfError('Invalid or unsupported opcode ' + struct.unpack('!B', opcode))
-		except MinusconfError, mce:
-			mce.send(self._sock, sender)
+		# Comment out for verbose error handling
+		#except MinusconfError, mce:
+			#mce.send(self._sock, sender)
+		except MinusconfError:
+			pass
 	
 	def services_matching(self, stype, sname):
 		return filter(lambda svc: svc.matches_query(stype, sname), self.services)
@@ -292,8 +311,9 @@ except ImportError:
 
 class Seeker(threading.Thread):
 	""" find_callback is called with (this_seeker,found_service_at)
-	error_callback is called with (this seeker, sender, error message) """
-	def __init__(self, servicetype='', advertisername='', servicename='', timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None, error_callback=None, daemonized=True, ignore_senderrors=True):
+	error_callback is called with (this seeker, sender, error message)
+	"""
+	def __init__(self, stype='', aname='', sname='', timeout=_SEEKER_TIMEOUT, port=_PORT, addresses=_ADDRESSES, find_callback=None, error_callback=None, daemonized=True, ignore_senderrors=True):
 		super(Seeker, self).__init__()
 		
 		self.timeout = timeout
@@ -303,14 +323,29 @@ class Seeker(threading.Thread):
 		self.error_callback = error_callback
 		self.setDaemon(daemonized)
 		self.ignore_senderrors = ignore_senderrors
-		self.reset(servicetype, advertisername, servicename)
+		self.reset(stype, aname, sname)
 	
-	def reset(self, servicetype='', advertisername='', servicename=''):
-		self.servicetype = servicetype
-		self.advertisername = advertisername
-		self.servicename = servicename
+	def reset(self, stype='', aname='', sname=''):
+		self.stype = stype
+		self.aname = aname
+		self.sname = sname
 		
 		self.results = set()
+	
+	def _set_stype(self, stype):
+		_check_val(stype)
+		self._stype = stype
+	stype = property(fget=lambda self:self._stype, fset=_set_stype)
+	
+	def _set_aname(self, aname):
+		_check_val(aname)
+		self._aname = aname
+	aname = property(fget=lambda self:self._aname, fset=_set_aname)
+
+	def _set_sname(self, sname):
+		_check_val(sname)
+		self._sname = sname
+	sname = property(fget=lambda self:self._sname, fset=_set_sname)
 	
 	def run(self):
 		sock = _find_sock()
@@ -373,9 +408,9 @@ class Seeker(threading.Thread):
 		return res
 	
 	def _send_query(self, sock, to):
-		binqry = _encode_string(self.advertisername)
-		binqry += _encode_string(self.servicetype)
-		binqry += _encode_string(self.servicename)
+		binqry = _encode_string(self.aname)
+		binqry += _encode_string(self.stype)
+		binqry += _encode_string(self.sname)
 		
 		_send_packet(sock, to, _OPCODE_QUERY, binqry)
 	
@@ -387,7 +422,7 @@ class Seeker(threading.Thread):
 		port,p = _decode_string(bindata, p)
 		
 		svca = ServiceAt(aname, stype, sname, location, port, sender[0])
-		if svca.matches_query_at(self.advertisername, self.servicetype, self.servicename):
+		if svca.matches_query_at(self.aname, self.stype, self.sname):
 			self._found_result(svca)
 	
 	def _found_result(self, result):
@@ -410,6 +445,14 @@ def _parse_packet(rawdata):
 	payload = rawdata[len(_MAGIC)+1:]
 	
 	return (opcode, payload)
+
+def _check_val(val):
+	""" Checks whether a minusconf value contains any NUL bytes. """
+	try:
+		if val.find('\x00') >= 0:
+			raise ValueError(repr(val) + ' contains a NUL byte')
+	except AttributeError: # Not a string or compatible
+		pass
 
 def _encode_string(val):
 	return val.encode(_CHARSET) + _STRING_TERMINATOR
