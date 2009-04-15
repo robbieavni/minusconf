@@ -160,9 +160,8 @@ class MinusconfUnitTest(unittest.TestCase):
 			testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET6]), '::ffff:1.2.3.4', socket.AF_INET6)
 		testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET]), '1.2.3.4')
 		
-		# TODO adequatly test invalid address resolution
-		#self.assertTrue(len(ra(['1.2.3.4.5'], None, True)) == 0)
-		#self.assertRaises(socket.gaierror, ra, ['1.2.3.4.5'], None, False)
+		self.assertEquals(ra(['::1::2'], None, True), [])
+		self.assertRaises(socket.gaierror, ra, ['::1::2'], None, False)
 	
 	def testNUL(self):
 		return # TODO
