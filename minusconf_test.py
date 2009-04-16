@@ -16,7 +16,7 @@ class MinusconfUnitTest(unittest.TestCase):
 		sz = self._sharp_s
 		
 		testid = socket.gethostname() + str(os.getpid())
-		self.svc1 = minusconf.Service('-conf-test-service-strange-' + testid, 'strangeport', 'some name')
+		self.svc1 = minusconf.Service('-conf-test-service-strange-' + testid, 'strangeport' + sz, 'some name' + sz, 'loc: ' + sz)
 		self.svc2 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'strangeport', 'some name', 'some location')
 		self.svc3 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp3', 'svc3: sharp s = ' + sz)
 		self.svc4 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp4', 'svc4', 'Buy More basement')
@@ -158,7 +158,7 @@ class MinusconfUnitTest(unittest.TestCase):
 			self.assertEquals(minusconf._inet_pton(fam, fr[1][0]), minusconf._inet_pton(fam, expected_addr))
 		
 		# Test auto conversion
-		if MinusconfUnitTest._testIPv6Support():
+		if MinusconfUnitTest._IPv6supported():
 			testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET6]), '::ffff:1.2.3.4', socket.AF_INET6)
 		testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET]), '1.2.3.4')
 		
@@ -183,7 +183,6 @@ class MinusconfUnitTest(unittest.TestCase):
 		self.assertRaises(ValueError, minusconf.Advertiser, [], 'advertiser\x00name')
 	
 	def testIntPort(self):
-		return # TODO
 		svc = minusconf.Service('stype', 42, 'sname')
 		x = 'a' + self._sharp_s + str(svc) + repr(svc)
 	
@@ -287,7 +286,7 @@ class MinusconfUnitTest(unittest.TestCase):
 					pass
 	
 	@staticmethod
-	def _testIPv6Support():
+	def _IPv6supported():
 		if not socket.has_ipv6:
 			return False
 		
