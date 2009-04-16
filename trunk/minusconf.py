@@ -21,13 +21,19 @@ if socket.has_ipv6:
 	_ADDRESSES.append(_ADDRESS_6)
 _CHARSET = 'UTF-8'
 
+# Compatibility functions
 try:
 	if bytes != str: # Python 3+
 		_compat_bytes = lambda bytestr: bytes(bytestr, 'charmap')
 	else: # 2.6+
 		_compat_bytes = str
-except: # <2.6
+except NameError: # <2.6
 	_compat_bytes = str
+
+try:
+	_compat_str = unicode
+except NameError: # Python 3+
+	_compat_str = str
 
 _MAGIC = _compat_bytes('\xad\xc3\xe6\xe7')
 _OPCODE_QUERY = _compat_bytes('\x01')
@@ -90,7 +96,7 @@ class Service(_MinusconfImmutableStruct):
 	""" Helper structure for a service."""
 	
 	def __init__(self, stype, port, sname='', location=''):
-		super(Service, self).__init__(stype=stype, port=port, sname=sname, location=location)
+		super(Service, self).__init__(stype=stype, port=_compat_str(port), sname=sname, location=location)
 	
 	def matches_query(self, stype, sname):
 		return _string_match(stype, self.stype) and _string_match(sname, self.sname)
