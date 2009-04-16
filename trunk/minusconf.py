@@ -238,6 +238,9 @@ class ConcurrentAdvertiser(Advertiser):
 		finally:
 			self._cav_started.set()
 	
+	def wait_until_ready(self, timeout=None):
+		self._cav_started.wait(timeout)
+	
 	def stop(self):
 		raise NotImplementedError()
 	
