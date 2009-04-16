@@ -201,7 +201,7 @@ class Advertiser(object):
 			elif opcode == None:
 				raise MinusconfError('Minusconf magic missing. See http://code.google.com/p/minusconf/source/browse/trunk/protocol.txt for details.')
 			else:
-				raise MinusconfError('Invalid or unsupported opcode ' + struct.unpack('!B', opcode))
+				raise MinusconfError('Invalid or unsupported opcode ' + str(struct.unpack('!B', opcode)[0]))
 		# Comment out for verbose error handling
 		#except MinusconfError, mce:
 			#mce.send(self._sock, sender)
@@ -338,8 +338,6 @@ class Seeker(threading.Thread):
 		self.stype = stype
 		self.aname = aname
 		self.sname = sname
-		
-		self.results = set()
 	
 	def _set_stype(self, stype):
 		_check_val(stype)
@@ -357,20 +355,47 @@ class Seeker(threading.Thread):
 	sname = property(fget=lambda self:self._sname, fset=_set_sname)
 	
 	def run(self):
-		sock = _find_sock()
-		addrs = _resolve_addrs(self.addresses, self.port, ignore_unavailable=True, protocols=[sock.family])
-		_multicast_configure_sender(sock, _TTL)
+		self._init_seeker()
 		
-		if self._send_queries(sock, self.addresses) > 0:
-			self._read_replies(sock)
+		if self._send_queries() > 0:
+			self._read_replies()
 	
 	def run_forever(self):
 		self.timeout = None
 		self.run()
 	
-	def _read_replies(self, sock):
+	def _init_seeker(self):
+		self.results = set()
+		
+		self._sock = _find_sock()
+		_multicast_configure_sender(self._sock, _TTL)
+	
+	def _send_queries(self):
+		""" Sends queries to multiple addresses. Returns the number of successful queries. """
+		
+		res = 0
+		
+		addrs = _resolve_addrs(self.addresses, self.port, self.ignore_senderrors, [self._sock.family])
+		for addr in addrs:
+			try:
+				self._send_query(addr[1])
+				res += 1
+			except:
+				if not self.ignore_senderrors:
+					raise
+		
+		return res
+	
+	def _send_query(self, to):
+		binqry = _encode_string(self.aname)
+		binqry += _encode_string(self.stype)
+		binqry += _encode_string(self.sname)
+		
+		_send_packet(self._sock, to, _OPCODE_QUERY, binqry)
+	
+	def _read_replies(self):
 		if self.timeout == None:
-			sock.settimeout(None)
+			self._sock.settimeout(None)
 		else:
 			starttime = time.time()
 		
@@ -380,13 +405,17 @@ class Seeker(threading.Thread):
 				if timeout < 0:
 					break
 				
-				sock.settimeout(timeout)
+				self._sock.settimeout(timeout)
 			
 			try:
-				rawdata,sender = sock.recvfrom(_MAX_PACKET_SIZE)
+				rawdata,sender = self._sock.recvfrom(_MAX_PACKET_SIZE)
 			except socket.timeout:
 				break
 			
+			self._handle_packet(rawdata, sender)
+	
+	def _handle_packet(self, rawdata, sender):
+		try:
 			opcode,data = _parse_packet(rawdata)
 			
 			if opcode == _OPCODE_ADVERTISEMENT:
@@ -399,29 +428,10 @@ class Seeker(threading.Thread):
 				
 				if self.error_callback != None:
 					self.error_callback(self, sender, error_str)
-	
-	def _send_queries(self, sock, straddrs):
-		""" Sends queries to multiple addresses. Returns the number of successful queries. """
-		
-		res = 0
-		
-		addrs = _resolve_addrs(straddrs, self.port, self.ignore_senderrors, [sock.family])
-		for addr in addrs:
-			try:
-				self._send_query(sock, addr[1])
-				res += 1
-			except:
-				if not self.ignore_senderrors:
-					raise
-		
-		return res
-	
-	def _send_query(self, sock, to):
-		binqry = _encode_string(self.aname)
-		binqry += _encode_string(self.stype)
-		binqry += _encode_string(self.sname)
-		
-		_send_packet(sock, to, _OPCODE_QUERY, binqry)
+			else: # Invalid opcode
+				pass
+		except MinusconfError: # Invalid packet
+			pass
 	
 	def _handle_advertisement(self, bindata, sender):
 		aname,p = _decode_string(bindata, 0)
@@ -429,6 +439,9 @@ class Seeker(threading.Thread):
 		sname,p = _decode_string(bindata, p)
 		location,p = _decode_string(bindata, p)
 		port,p = _decode_string(bindata, p)
+		
+		if stype == '': # servicetype must be non-empty
+			return
 		
 		svca = ServiceAt(aname, stype, sname, location, port, sender[0])
 		if svca.matches_query_at(self.aname, self.stype, self.sname):
@@ -472,7 +485,13 @@ def _decode_string(buf, pos):
 	"""
 	for i in range(pos, len(buf)):
 		if buf[i:i+1] == _compat_bytes('\x00'):
-			return (buf[pos:i].decode(_CHARSET), i+1)
+			try:
+				return (buf[pos:i].decode(_CHARSET), i+1)
+			# Uncomment the following two lines for detailled information
+			#except UnicodeDecodeError as ude:
+			#	raise MinusconfError(str(ude))
+			except UnicodeDecodeError:
+				raise MinusconfError('Not a valid ' + _CHARSET + ' string: ' + repr(buf[pos:i]))
 	
 	raise MinusconfError("Premature end of string (Forgot trailing \\0?), buf=" + repr(buf))
 
