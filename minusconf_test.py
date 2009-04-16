@@ -5,6 +5,7 @@ import unittest
 import minusconf
 import socket
 import time
+import os
 
 class MinusconfUnitTest(unittest.TestCase):
 	def setUp(self):
@@ -14,12 +15,12 @@ class MinusconfUnitTest(unittest.TestCase):
 			self._sharp_s = chr(223)
 		sz = self._sharp_s
 		
-		machineid = socket.gethostname()
-		self.svc1 = minusconf.Service('-conf-test-service-strange-' + machineid, 'strangeport', 'some name')
-		self.svc2 = minusconf.Service('-conf-test-service' + sz + machineid, 'strangeport', 'some name', 'some location')
-		self.svc3 = minusconf.Service('-conf-test-service' + sz + machineid, 'svcp3', 'svc3: sharp s = ' + sz)
-		self.svc4 = minusconf.Service('-conf-test-service' + sz + machineid, 'svcp4', 'svc4', 'Buy More basement')
-		self.svc5 = minusconf.Service('-conf-test-service' + sz + machineid, 'svcp5', 'svc5')
+		testid = socket.gethostname() + str(os.getpid())
+		self.svc1 = minusconf.Service('-conf-test-service-strange-' + testid, 'strangeport', 'some name')
+		self.svc2 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'strangeport', 'some name', 'some location')
+		self.svc3 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp3', 'svc3: sharp s = ' + sz)
+		self.svc4 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp4', 'svc4', 'Buy More basement')
+		self.svc5 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp5', 'svc5')
 	
 	def testServiceMatching(self):
 		a = minusconf.Advertiser()
@@ -210,8 +211,6 @@ class MinusconfUnitTest(unittest.TestCase):
 	def _runSingleConcurrentAdvertiserTest(self, advertiser):
 		advertiser.start_blocking()
 		
-		self._runTestSeek([])
-		
 		advertiser.services.append(self.svc1)
 		self._runTestSeek([self.svc1], self.svc1.stype)
 		
@@ -226,10 +225,9 @@ class MinusconfUnitTest(unittest.TestCase):
 		
 		advertiser.stop_blocking()
 		
-		self._runTestSeek([], self.svc1.stype)
-		self._runTestSeek([], self.svc1.stype)
+		self._runTestSeek([], self.svc2.stype)
 	
-	def _runTestSeek(self, services, stype=None, timeouts=[0.01,0.1,0.5,1.0]):
+	def _runTestSeek(self, services, stype=None, timeouts=[0.01,0.1,0.5]):
 		if stype == None:
 			if len(services) > 0:
 				stype = services[0].stype
@@ -246,7 +244,9 @@ class MinusconfUnitTest(unittest.TestCase):
 		s.find_callback = find_callback
 		s.error_callback = lambda seeker,serveraddr,errorstr: self.fail('Got error ' + repr(errorstr) + ' from ' + repr(serveraddr))
 		
-		# TODO special-case services == []
+		if len(services) == 0:
+			timeouts = [max(timeouts)]
+		
 		for to in timeouts:
 			try:
 				s.timeout = to
@@ -267,8 +267,6 @@ class MinusconfUnitTest(unittest.TestCase):
 		try:
 			for av,svcs in advertiser_services:
 				av.start_blocking()
-			
-			self._runTestSeek([], stype)
 			
 			expected_services = set()
 			for av,svcs in advertiser_services:
