@@ -198,6 +198,8 @@ class Advertiser(object):
 			
 			if opcode == _OPCODE_QUERY:
 				self._handle_query(sender, data)
+			elif opcode == _OPCODE_ERROR:
+				pass # Explicitely prevent bouncing errors
 			elif opcode == None:
 				raise MinusconfError('Minusconf magic missing. See http://code.google.com/p/minusconf/source/browse/trunk/protocol.txt for details.')
 			else:
