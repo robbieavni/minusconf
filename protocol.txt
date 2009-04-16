@@ -21,4 +21,4 @@ A response to a query. advertisername, servicetype and servicename are usually c
 
 111 Error (S message) (optional)
 
-Optional reply to an invalid or unanswerable query.
+Optional reply to an invalid or unanswerable query. Must never be sent as a response to an Error message.
