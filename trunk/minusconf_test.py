@@ -15,12 +15,12 @@ class MinusconfUnitTest(unittest.TestCase):
 			self._sharp_s = chr(223)
 		sz = self._sharp_s
 		
-		testid = socket.gethostname() + str(os.getpid())
-		self.svc1 = minusconf.Service('-conf-test-service-strange-' + testid, 'strangeport' + sz, 'some name' + sz, 'loc: ' + sz)
-		self.svc2 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'strangeport', 'some name', 'some location')
-		self.svc3 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp3', 'svc3: sharp s = ' + sz)
-		self.svc4 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp4', 'svc4', 'Buy More basement')
-		self.svc5 = minusconf.Service('-conf-test-service' + sz + '-' + testid, 'svcp5', 'svc5')
+		self._testid = socket.gethostname() + str(os.getpid())
+		self.svc1 = minusconf.Service('-conf-test-service-strange-' + self._testid, 'strangeport' + sz, 'some name' + sz, 'loc: ' + sz)
+		self.svc2 = minusconf.Service('-conf-test-service' + sz + '-' + self._testid, 'strangeport', 'some name', 'some location')
+		self.svc3 = minusconf.Service('-conf-test-service' + sz + '-' + self._testid, 'svcp3', 'svc3: sharp s = ' + sz)
+		self.svc4 = minusconf.Service('-conf-test-service' + sz + '-' + self._testid, 'svcp4', 'svc4', 'Buy More basement')
+		self.svc5 = minusconf.Service('-conf-test-service' + sz + '-' + self._testid, 'svcp5', 'svc5')
 	
 	def testServiceMatching(self):
 		a = minusconf.Advertiser()
@@ -203,9 +203,98 @@ class MinusconfUnitTest(unittest.TestCase):
 		self.assertEquals(s.stype, stype)
 		self.assertEquals(s.aname, aname)
 		self.assertEquals(s.sname, sname)
+		
+		s.timeout = 0.00001
+		s.run() # Shouldn't find anything
+		s._found_result(minusconf.ServiceAt('aaa', 'bbb', 'ccc', 'ddd', 'eee', 'fff'))
+		s.run() # dito
+		
+		self.assertTrue(len(s.results) == 0)
 	
 	def testMalformed(self):
-		return #TODO
+		_cb = minusconf._compat_bytes
+		
+		## Packets to the advertiser
+		a = minusconf.Advertiser([self.svc2], 'minusconf.test.malformed.' + self._testid)
+		a._sock = self._create_fake_sock()
+		
+		avsend = lambda data: a._handle_packet(data, '::')
+		sendquery = lambda data: avsend(minusconf._MAGIC + minusconf._OPCODE_QUERY + data)
+		
+		# Invalid magic
+		avsend(_cb(''))
+		avsend(_cb('X'))
+		avsend(_cb('bye'))
+		avsend(_cb('hell'))
+		avsend(_cb('hello'))
+		avsend(_cb('hello minusconf'))
+		
+		# Invalid opcode
+		avsend(minusconf._MAGIC)
+		avsend(minusconf._MAGIC + _cb('\x00'))
+		avsend(minusconf._MAGIC + _cb('\xff'))
+		
+		# Advertiser-to-seeker opcode
+		avsend(minusconf._MAGIC + minusconf._OPCODE_ADVERTISEMENT)
+		avsend(minusconf._MAGIC + minusconf._OPCODE_ERROR + _cb('s\0'))
+		
+		# Invalid query
+		sendquery(_cb(''))
+		sendquery(_cb('\0\0'))
+		
+		# Valid query with more data
+		sendquery(_cb('a\0b\0c\0d'))
+		sendquery(_cb('a\0b\0c\0d\0'))
+		sendquery(_cb('a\0b\0c\0'))
+		
+		# Invalid UTF-8
+		sendquery(_cb('\xff\0\xff\0\xff\0'))
+		
+		
+		## Packets to the seeker
+		s = minusconf.Seeker()
+		s._init_seeker()
+		
+		sksend = lambda data: s._handle_packet(data, '::')
+		skav = lambda data: sksend(minusconf._MAGIC + minusconf._OPCODE_ADVERTISEMENT + data)
+		
+		# Invalid magic
+		sksend(_cb(''))
+		sksend(_cb('X'))
+		sksend(_cb('bye'))
+		sksend(_cb('hell'))
+		sksend(_cb('hello'))
+		sksend(_cb('hello minusconf'))
+		
+		# Invalid opcode
+		sksend(minusconf._MAGIC)
+		sksend(minusconf._MAGIC + _cb('\x00'))
+		sksend(minusconf._MAGIC + _cb('\xff'))
+
+		# Advertiser-to-seeker opcode
+		sksend(minusconf._MAGIC + minusconf._OPCODE_QUERY + _cb('\0\0\0'))
+		
+		# Invalid advertisement
+		skav(_cb(''))
+		skav(_cb('\0'))
+		skav(_cb('\0\0\0\0'))
+		skav(_cb('a\0b\0c\0d\0'))
+		
+		# Invalid UTF-8
+		skav(_cb('aname-utf\xff\0stype\0sname\0loc\0port\0'))
+		
+		# Nearly valid advertisements
+		skav(_cb('aname-nostype\0\0sname\0loc\0port\0')) # no servicetype
+		s.aname = 'asdf'
+		skav(_cb('aname-notaskedfor\0\0sname\0loc\0port\0')) # not asked for
+		
+		self.assertTrue(len(s.results) == 0)
+		
+		# Additional data
+		s.aname = ''
+		skav(_cb('aname\0stype\0sname\0loc\0port\0additional data'))
+		
+		self.assertTrue(len(s.results) == 1)
 	
 	def _runSingleConcurrentAdvertiserTest(self, advertiser):
 		advertiser.start_blocking()
@@ -284,6 +373,13 @@ class MinusconfUnitTest(unittest.TestCase):
 					av.stop_blocking()
 				except:
 					pass
+	
+	def _create_fake_sock(self):
+		class _FakeSocket(object):
+			def sendto (sockself, data, flags, to):
+				pass
+		
+		return _FakeSocket()
 	
 	@staticmethod
 	def _IPv6supported():
