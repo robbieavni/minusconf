@@ -20,6 +20,7 @@ _ADDRESSES = [_ADDRESS_4]
 if socket.has_ipv6:
 	_ADDRESSES.append(_ADDRESS_6)
 _CHARSET = 'UTF-8'
+VERSION='1.0'
 
 # Compatibility functions
 try:

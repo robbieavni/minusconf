@@ -69,9 +69,34 @@ class MinusconfUnitTest(unittest.TestCase):
 		a_thread = minusconf.ThreadAdvertiser([], 'unittest.advertiser-thread-single')
 		self._runSingleConcurrentAdvertiserTest(a_thread)
 	
-	def testSingleMultiprocessingAdvertiser(self):
-		a_mp = minusconf.MultiprocessingAdvertiser([], 'unittest.advertiser-multiprocessing-single')
-		self._runSingleConcurrentAdvertiserTest(a_mp)
+	if hasattr(minusconf, 'MultiprocessingAdvertiser'):
+		def testSingleMultiprocessingAdvertiser(self):
+			a_mp = minusconf.MultiprocessingAdvertiser([], 'unittest.advertiser-multiprocessing-single')
+			self._runSingleConcurrentAdvertiserTest(a_mp)
+		
+		def testMultiMultiprocessingAdvertisers(self):
+			a1 = minusconf.MultiprocessingAdvertiser([], 'unittest.multitest.MultiprocessingAdvertiser1')
+			a2 = minusconf.MultiprocessingAdvertiser([], 'unittest.multitest.MultiprocessingAdvertiser2')
+			
+			self._runMultiTest([
+				(a1, [self.svc1, self.svc2, self.svc3]),
+				(a2, [self.svc3, self.svc4, self.svc5]),
+				], self.svc2.stype)
+		
+		def testMultiCombinedAdvertisers(self):
+			mpa1 = minusconf.MultiprocessingAdvertiser([], 'unittest.multictest.MultiprocessingAdvertiser1')
+			mpa2 = minusconf.MultiprocessingAdvertiser([], 'unittest.multictest.MultiprocessingAdvertiser2')
+			ta1 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser1')
+			ta2 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser2')
+			ta3 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser3')
+			
+			self._runMultiTest([
+				(mpa1, [self.svc1, self.svc2, self.svc3]),
+				(mpa2, [self.svc3]),
+				(ta1, [self.svc2, self.svc4]),
+				(ta2, [self.svc1, self.svc5]),
+				(ta3, []),
+				], self.svc2.stype)
 	
 	def testMultiThreadAdvertisers(self):
 		a1 = minusconf.ThreadAdvertiser([], 'unittest.multitest.ThreadAdvertiser1')
@@ -80,30 +105,6 @@ class MinusconfUnitTest(unittest.TestCase):
 		self._runMultiTest([
 			(a1, [self.svc1, self.svc2, self.svc3]),
 			(a2, [self.svc3, self.svc4, self.svc5]),
-			], self.svc2.stype)
-	
-	def testMultiMultiprocessingAdvertisers(self):
-		a1 = minusconf.MultiprocessingAdvertiser([], 'unittest.multitest.MultiprocessingAdvertiser1')
-		a2 = minusconf.MultiprocessingAdvertiser([], 'unittest.multitest.MultiprocessingAdvertiser2')
-		
-		self._runMultiTest([
-			(a1, [self.svc1, self.svc2, self.svc3]),
-			(a2, [self.svc3, self.svc4, self.svc5]),
-			], self.svc2.stype)
-	
-	def testMultiCombinedAdvertisers(self):
-		mpa1 = minusconf.MultiprocessingAdvertiser([], 'unittest.multictest.MultiprocessingAdvertiser1')
-		mpa2 = minusconf.MultiprocessingAdvertiser([], 'unittest.multictest.MultiprocessingAdvertiser2')
-		ta1 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser1')
-		ta2 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser2')
-		ta3 = minusconf.ThreadAdvertiser([], 'unittest.multictest.ThreadAdvertiser3')
-		
-		self._runMultiTest([
-			(mpa1, [self.svc1, self.svc2, self.svc3]),
-			(mpa2, [self.svc3]),
-			(ta1, [self.svc2, self.svc4]),
-			(ta2, [self.svc1, self.svc5]),
-			(ta3, []),
 			], self.svc2.stype)
 	
 	def testInetPton(self):
@@ -162,8 +163,10 @@ class MinusconfUnitTest(unittest.TestCase):
 			testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET6]), '::ffff:1.2.3.4', socket.AF_INET6)
 		testResolveTo(ra(['1.2.3.4'], None, False, [socket.AF_INET]), '1.2.3.4')
 		
-		self.assertEquals(ra(['::1::2', '1.2.3.4', '::2::1'], None, True), [(socket.AF_INET, ('1.2.3.4', 0), socket.AF_INET, '1.2.3.4')])
-		self.assertRaises(socket.gaierror, ra, ['::1::2'], None, False)
+		# These are so long to prevent them from being resolved (which really slows down systems trying to contact an unreachable DNS server)
+		invalid = ['::1::..invalid_address'*256, '::1::..invalid_address_2'*256]
+		self.assertRaises(socket.gaierror, ra, [invalid[0]], None, False)
+		self.assertEquals(ra([invalid[0], '1.2.3.4', invalid[1]], None, True), [(socket.AF_INET, ('1.2.3.4', 0), socket.AF_INET, '1.2.3.4')])
 	
 	def testNUL(self):
 		optlen = 4
