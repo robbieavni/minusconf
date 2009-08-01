@@ -362,6 +362,8 @@ class Seeker(threading.Thread):
 		
 		if self._send_queries() > 0:
 			self._read_replies()
+		
+		return self.results
 	
 	def run_forever(self):
 		self.timeout = None
