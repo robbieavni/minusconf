@@ -1,0 +1,3 @@
+minusconf is a service location protocol.
+Unlike SSDP, UPnP, SLP, Zero-Conf and friends, it works without any configuration anywhere, is lightweight (this whole Python implementation is just one file), allows multiple services per machine without any configuration between the services and survives turning off arbitrary machines as well as subnets.
+However, it lacks device descriptions, abonnements and unsolicited advertisements.
